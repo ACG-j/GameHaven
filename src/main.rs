@@ -1,9 +1,91 @@
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 
 use eframe::egui::{self, CentralPanel, Frame, RichText, ScrollArea, TextEdit};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
 mod fonts;
+mod steam_store;
+
+type LookupResult = Result<Option<steam_store::StoreApp>, String>;
+
+#[derive(Default)]
+enum StoreLookup {
+    #[default]
+    Idle,
+    Pending(u32, Receiver<LookupResult>),
+    Finished(u32, LookupResult),
+}
+
+impl StoreLookup {
+    fn start(&mut self, app_id: u32, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        *self = match thread::Builder::new()
+            .name("steam-store".into())
+            .spawn(move || {
+                let _ = sender.send(steam_store::lookup(app_id));
+                ctx.request_repaint();
+            }) {
+            Ok(_) => Self::Pending(app_id, receiver),
+            Err(_) => Self::Finished(app_id, Err("无法启动 Steam 商店查询，请重试。".into())),
+        };
+    }
+
+    fn poll(&mut self) {
+        let Self::Pending(app_id, receiver) = self else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => Err("Steam 商店查询意外结束，请重试。".into()),
+        };
+        *self = Self::Finished(*app_id, result);
+    }
+
+    fn show(&self, ui: &mut egui::Ui, current_id: Option<u32>) {
+        match self {
+            Self::Pending(app_id, _) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("正在查询 AppID {app_id}…"));
+                });
+            }
+            Self::Finished(app_id, result) if Some(*app_id) == current_id => match result {
+                Ok(Some(app)) => {
+                    ui.label(RichText::new(&app.name).strong());
+                    let platforms: Vec<_> = app
+                        .platforms
+                        .iter()
+                        .flat_map(|platforms| {
+                            [
+                                (platforms.windows, "Windows"),
+                                (platforms.mac, "macOS"),
+                                (platforms.linux, "Linux"),
+                            ]
+                            .into_iter()
+                            .filter_map(|(supported, name)| supported.then_some(name))
+                        })
+                        .collect();
+                    if platforms.is_empty() {
+                        ui.weak("商店未列出支持平台。");
+                    } else {
+                        ui.label(format!("商店列出的平台 · {}", platforms.join(" / ")));
+                    }
+                }
+                Ok(None) => {
+                    ui.label("Steam 商店未提供这个 AppID 的公开信息。");
+                }
+                Err(message) => {
+                    ui.colored_label(ui.visuals().error_fg_color, message);
+                }
+            },
+            _ => {}
+        }
+    }
+}
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -26,6 +108,7 @@ fn main() -> eframe::Result {
 
 struct GameHaven {
     app_id: String,
+    store_lookup: StoreLookup,
     manifest: Option<PathBuf>,
     library: Option<PathBuf>,
     manifest_dialog: FileDialog,
@@ -75,6 +158,7 @@ impl GameHaven {
 
         Self {
             app_id: String::new(),
+            store_lookup: StoreLookup::default(),
             manifest: None,
             library: None,
             manifest_dialog: picker("manifest", labels.clone()),
@@ -85,6 +169,7 @@ impl GameHaven {
 
 impl eframe::App for GameHaven {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.store_lookup.poll();
         CentralPanel::default().show(ui, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(12.0);
@@ -97,17 +182,35 @@ impl eframe::App for GameHaven {
                     ui.add_space(12.0);
 
                     let label = ui.label("Steam AppID");
-                    ui.add(
-                        TextEdit::singleline(&mut self.app_id)
-                            .hint_text("输入 Steam AppID")
-                            .desired_width(242.0),
-                    )
-                    .labelled_by(label.id);
+                    let app_id = ui
+                        .horizontal(|ui| {
+                            ui.add(
+                                TextEdit::singleline(&mut self.app_id)
+                                    .hint_text("输入 Steam AppID")
+                                    .desired_width(220.0),
+                            )
+                            .labelled_by(label.id);
+                            let app_id = validate_app_id(&self.app_id);
+                            let busy = matches!(self.store_lookup, StoreLookup::Pending(..));
+                            if ui
+                                .add_enabled(
+                                    app_id.is_ok() && !busy,
+                                    egui::Button::new("查询 Steam 商店"),
+                                )
+                                .clicked()
+                                && let Ok(app_id) = app_id
+                            {
+                                self.store_lookup.start(app_id, ui.ctx());
+                            }
+                            app_id
+                        })
+                        .inner;
                     if !self.app_id.trim().is_empty()
-                        && let Err(message) = validate_app_id(&self.app_id)
+                        && let Err(message) = app_id
                     {
                         ui.colored_label(ui.visuals().error_fg_color, message);
                     }
+                    self.store_lookup.show(ui, app_id.ok());
 
                     ui.add_space(12.0);
                     if path_input(ui, "本地清单", "选择文件…", &mut self.manifest) {
@@ -120,7 +223,7 @@ impl eframe::App for GameHaven {
                 });
 
                 ui.add_space(12.0);
-                ui.weak("Steam 查询、下载与安装尚未接入。");
+                ui.weak("Steam 清单解析、下载与安装尚未接入。");
             });
         });
 

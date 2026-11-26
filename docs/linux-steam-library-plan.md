@@ -4,6 +4,10 @@ GameHaven 自建 UI。后端只接可独立运行的 CLI 或有明确调用接�
 
 GUI 已选定为 `eframe + egui 0.37`，使用纯 Rust 原生窗口和 `wgpu` 渲染，不使用 Tauri、WebView、GTK 或 Qt。具体比较和 Linux 验证边界见 [GUI 选型](gui-selection.md)。
 
+## Steam 商店查询
+
+在原型输入 AppID 并点击「查询 Steam 商店」，即可查看公开名称和商店列出的平台。界面仅在点击查询时把 AppID 发送给 Steam 商店，查询在后台执行，单次超时设为 12 秒。商店平台字段用于显示商品信息，安装仍需通过 Steam 许可证和下载流程。[商店响应示例](https://store.steampowered.com/api/appdetails?appids=440&l=schinese)
+
 ## 已验证的 Linux CLI
 
 选用候选项目的具体版本是 `mcbabel/Steam-Manifest-Downloader v1.5.0`。该版本同时发布了 Linux x64 终端程序 `Steam-Manifest-Downloader-Terminal_1.5.0_linux-x64` 和 amd64 桌面 AppImage。GameHaven 只调用终端程序 `smd`。这个 release 的资产列表中没有独立发布的后端 `.so`。[v1.5.0 发布页](https://github.com/mcbabel/Steam-Manifest-Downloader/releases/tag/v1.5.0)
