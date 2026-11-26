@@ -5,6 +5,7 @@ use std::thread;
 use eframe::egui::{self, CentralPanel, Frame, RichText, ScrollArea, TextEdit};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
+mod depot;
 mod fonts;
 mod steam_store;
 
@@ -113,6 +114,7 @@ struct GameHaven {
     library: Option<PathBuf>,
     manifest_dialog: FileDialog,
     library_dialog: FileDialog,
+    download: DepotPanel,
 }
 
 impl GameHaven {
@@ -163,6 +165,7 @@ impl GameHaven {
             library: None,
             manifest_dialog: picker("manifest", labels.clone()),
             library_dialog: picker("library", labels),
+            download: DepotPanel::default(),
         }
     }
 }
@@ -170,6 +173,7 @@ impl GameHaven {
 impl eframe::App for GameHaven {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.store_lookup.poll();
+        self.download.poll(ui.ctx(), &mut self.app_id);
         CentralPanel::default().show(ui, |ui| {
             ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(12.0);
@@ -213,29 +217,182 @@ impl eframe::App for GameHaven {
                     self.store_lookup.show(ui, app_id.ok());
 
                     ui.add_space(12.0);
-                    if path_input(ui, "本地清单", "选择文件…", &mut self.manifest) {
+                    let had_manifest = self.manifest.is_some();
+                    let browse_manifest = ui
+                        .add_enabled_ui(self.download.job.is_none(), |ui| {
+                            path_input(ui, "本地清单", "选择文件…", &mut self.manifest)
+                        })
+                        .inner;
+                    if browse_manifest {
                         self.manifest_dialog.pick_file();
                     }
+                    if had_manifest && self.manifest.is_none() {
+                        self.download = DepotPanel::default();
+                    }
                     ui.add_space(10.0);
-                    if path_input(ui, "目标库", "选择目录…", &mut self.library) {
+                    let browse_library = ui
+                        .add_enabled_ui(self.download.job.is_none(), |ui| {
+                            path_input(ui, "目标库", "选择目录…", &mut self.library)
+                        })
+                        .inner;
+                    if browse_library {
                         self.library_dialog.pick_directory();
                     }
+                    self.download
+                        .show(ui, &self.manifest, &self.library, app_id.ok());
                 });
-
-                ui.add_space(12.0);
-                ui.weak("Steam 清单解析、下载与安装尚未接入。");
             });
         });
 
         self.manifest_dialog.update(ui.ctx());
         if let Some(path) = self.manifest_dialog.take_picked() {
             self.manifest = Some(path);
+            self.download = DepotPanel::default();
             ui.ctx().request_repaint();
         }
         self.library_dialog.update(ui.ctx());
         if let Some(path) = self.library_dialog.take_picked() {
             self.library = Some(path);
             ui.ctx().request_repaint();
+        }
+    }
+}
+
+#[derive(Default)]
+struct DepotPanel {
+    job: Option<depot::Job>,
+    plan: Option<depot::Plan>,
+    selected: usize,
+    result: Option<Result<&'static str, String>>,
+    last_progress: depot::Progress,
+}
+
+impl DepotPanel {
+    fn start(&mut self, request: depot::Request) {
+        self.result = None;
+        self.last_progress = depot::Progress::default();
+        match depot::Job::start(request) {
+            Ok(job) => self.job = Some(job),
+            Err(err) => self.result = Some(Err(format!("无法启动任务（{err}）。"))),
+        }
+    }
+
+    fn poll(&mut self, ctx: &egui::Context, app_id: &mut String) {
+        let Some(job) = &mut self.job else {
+            return;
+        };
+        let Some(result) = job.try_finish() else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        };
+        self.last_progress = job.progress();
+        self.job = None;
+        match result {
+            Ok(depot::Outcome::Inspected(plan)) => {
+                if app_id.trim().is_empty() {
+                    *app_id = plan.app_id.to_string();
+                }
+                self.plan = Some(plan);
+                self.selected = 0;
+            }
+            Ok(depot::Outcome::Downloaded) => self.result = Some(Ok("Depot 下载完成。")),
+            Ok(depot::Outcome::Cancelled) => self.result = Some(Ok("任务已取消。")),
+            Err(message) => self.result = Some(Err(message)),
+        }
+    }
+
+    fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        manifest: &Option<PathBuf>,
+        library: &Option<PathBuf>,
+        app_id: Option<u32>,
+    ) {
+        let Some(manifest) = manifest else {
+            return;
+        };
+        ui.add_space(12.0);
+        if let Some(job) = &self.job {
+            let progress = job.progress();
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(if job.cancelling() {
+                    "正在取消…"
+                } else if self.plan.is_some() {
+                    "正在下载 Depot…"
+                } else {
+                    "正在解析清单…"
+                });
+                if ui
+                    .add_enabled(!job.cancelling(), egui::Button::new("取消任务"))
+                    .clicked()
+                {
+                    job.cancel();
+                }
+            });
+            if let Some(fraction) = progress.fraction {
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+            }
+            Self::show_progress(ui, &progress);
+            return;
+        }
+
+        if let Some(plan) = &self.plan {
+            ui.label(format!(
+                "清单 AppID {} · {} 个 Depot",
+                plan.app_id,
+                plan.depots.len()
+            ));
+            let depot_label = |depot: &depot::Depot| match depot.manifest {
+                Some(id) => format!("Depot {} · Manifest {id}", depot.id),
+                None => format!("Depot {} · 当前公开版本", depot.id),
+            };
+            egui::ComboBox::from_id_salt("manifest-depots")
+                .selected_text(depot_label(&plan.depots[self.selected]))
+                .show_ui(ui, |ui| {
+                    for (index, depot) in plan.depots.iter().enumerate() {
+                        ui.selectable_value(&mut self.selected, index, depot_label(depot));
+                    }
+                });
+            if app_id != Some(plan.app_id) {
+                ui.weak("请将输入的 AppID 改为清单中的 AppID。");
+            }
+            if ui
+                .add_enabled(
+                    library.is_some() && app_id == Some(plan.app_id),
+                    egui::Button::new("匿名下载所选 Depot"),
+                )
+                .clicked()
+                && let Some(library) = library
+            {
+                self.start(depot::Request::Fetch {
+                    app_id: plan.app_id,
+                    depot: plan.depots[self.selected],
+                    library: library.clone(),
+                });
+            }
+        } else if ui.button("解析清单").clicked() {
+            self.start(depot::Request::Inspect(manifest.clone()));
+        }
+
+        match &self.result {
+            Some(Ok(message)) => {
+                ui.label(*message);
+            }
+            Some(Err(message)) => {
+                ui.colored_label(ui.visuals().error_fg_color, message);
+            }
+            None => {}
+        }
+        Self::show_progress(ui, &self.last_progress);
+    }
+
+    fn show_progress(ui: &mut egui::Ui, progress: &depot::Progress) {
+        if let Some(path) = &progress.output {
+            ui.label(format!("输出目录 · {}", path.display()));
+        }
+        if !progress.detail.is_empty() {
+            ui.weak(&progress.detail);
         }
     }
 }

@@ -10,7 +10,7 @@ GUI 已选定为 `eframe + egui 0.37`，使用纯 Rust 原生窗口和 `wgpu` �
 
 ## 已验证的 Linux CLI
 
-选用候选项目的具体版本是 `mcbabel/Steam-Manifest-Downloader v1.5.0`。该版本同时发布了 Linux x64 终端程序 `Steam-Manifest-Downloader-Terminal_1.5.0_linux-x64` 和 amd64 桌面 AppImage。GameHaven 只调用终端程序 `smd`。这个 release 的资产列表中没有独立发布的后端 `.so`。[v1.5.0 发布页](https://github.com/mcbabel/Steam-Manifest-Downloader/releases/tag/v1.5.0)
+清单预览使用 `mcbabel/Steam-Manifest-Downloader v1.5.0` 的 Linux x64 终端程序 `smd`。下载使用 `SteamRE/DepotDownloader 3.4.0`，由 Steam 匿名会话决定可访问的 Depot。两个工具需单独安装，并放在 `PATH` 中。也可通过 `GAMEHAVEN_SMD` 和 `GAMEHAVEN_DEPOT_DOWNLOADER` 指定可执行文件的绝对路径。[smd 发布页](https://github.com/mcbabel/Steam-Manifest-Downloader/releases/tag/v1.5.0) · [DepotDownloader 发布页](https://github.com/SteamRE/DepotDownloader/releases/tag/DepotDownloader_3.4.0)
 
 已在本机 Linux x86_64 核对发布资产的 SHA-256，并在断网、临时数据目录、无 TTY 的环境下执行发布版二进制。验证结果如下。
 
@@ -20,7 +20,11 @@ GUI 已选定为 `eframe + egui 0.37`，使用纯 Rust 原生窗口和 `wgpu` �
 | `smd --data-dir /tmp/data history --json` | `[]` | 空 | 0 |
 | `smd history --invalid-option` | 空 | 包含无效参数名和用法 | 2 |
 
-以上覆盖进程启动、空历史 JSON 和参数错误。在线查询、真实清单处理、下载完成和取消仍待验收。该版本源码提供无界面的查询和下载子命令，具体输出按子命令分别验证。[v1.5.0 CLI 入口](https://github.com/mcbabel/Steam-Manifest-Downloader/blob/v1.5.0/src-tui/src/main.rs)
+`smd download --list --json` 已用 `.lua` 和 `.st` 样本验证。有效清单输出含 AppID、Depot ID 和 Manifest ID 的 `plan`，损坏清单退出码为 1。GameHaven 使用临时数据目录调用 `smd`，清单预览可取消。[v1.5.0 CLI 入口](https://github.com/mcbabel/Steam-Manifest-Downloader/blob/v1.5.0/src-tui/src/cli.rs)
+
+每次下载选择一个 Depot，写入目标库下的新目录。进度来自 CLI 的百分比行，成功状态要求退出码为 0 且 CLI 汇报完成了一个 Depot。取消后保留已写入的文件，重新下载会创建新目录。界面里的下载完成指文件获取，Steam 客户端安装和注册仍待实现。
+
+2026-11-26 在 X11 下用真实 `smd` 验证有效与损坏清单，用测试进程验证下载进度、完成以及退出码为 0 但缺少完成回执的情况。界面取消了实际运行的 DepotDownloader，并确认进程退出。另用 TF2 Dedicated Server 的 AppID `232250` 和 Depot `232257` 尝试下载，Steam3 匿名连接阶段超时，尚未取得真实下载成功记录。[DepotDownloader 3.4.0 下载实现](https://github.com/SteamRE/DepotDownloader/blob/DepotDownloader_3.4.0/DepotDownloader/ContentDownloader.cs)
 
 ## 实施顺序
 
