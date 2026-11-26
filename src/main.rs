@@ -7,6 +7,9 @@ use egui_file_dialog::{FileDialog, FileDialogLabels};
 
 mod depot;
 mod fonts;
+mod local_games;
+mod shortcuts;
+mod steam_library;
 mod steam_store;
 
 type LookupResult = Result<Option<steam_store::StoreApp>, String>;
@@ -115,6 +118,12 @@ struct GameHaven {
     manifest_dialog: FileDialog,
     library_dialog: FileDialog,
     download: DepotPanel,
+    local_games: local_games::LocalGames,
+    libraries: Vec<steam_library::Library>,
+    accounts: Vec<steam_library::SteamAccount>,
+    local_page: bool,
+    installed: Option<(u32, Option<PathBuf>)>,
+    install_request: Option<(u32, Result<(), String>)>,
 }
 
 impl GameHaven {
@@ -158,14 +167,21 @@ impl GameHaven {
                 .show_new_folder_button(false)
         };
 
+        let (libraries, accounts) = steam_library::discover();
         Self {
             app_id: String::new(),
             store_lookup: StoreLookup::default(),
             manifest: None,
             library: None,
             manifest_dialog: picker("manifest", labels.clone()),
-            library_dialog: picker("library", labels),
+            library_dialog: picker("library", labels.clone()),
             download: DepotPanel::default(),
+            local_games: local_games::LocalGames::new(labels),
+            libraries,
+            accounts,
+            local_page: false,
+            installed: None,
+            install_request: None,
         }
     }
 }
@@ -180,8 +196,21 @@ impl eframe::App for GameHaven {
                 ui.label(RichText::new("游栖 · GameHaven").size(27.0).strong());
                 ui.add_space(14.0);
 
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.local_page, false, "Steam 游戏");
+                    ui.selectable_value(&mut self.local_page, true, "本地游戏");
+                    if ui.button("刷新 Steam 库").clicked() {
+                        (self.libraries, self.accounts) = steam_library::discover();
+                        self.installed = None;
+                    }
+                });
+                ui.add_space(10.0);
                 Frame::group(ui.style()).inner_margin(18).show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
+                    if self.local_page {
+                        self.local_games.show(ui, &self.accounts);
+                        return;
+                    }
                     ui.heading("准备 Steam 游戏");
                     ui.add_space(12.0);
 
@@ -232,7 +261,23 @@ impl eframe::App for GameHaven {
                     ui.add_space(10.0);
                     let browse_library = ui
                         .add_enabled_ui(self.download.job.is_none(), |ui| {
-                            path_input(ui, "目标库", "选择目录…", &mut self.library)
+                            let browse = path_input(ui, "目标库", "选择目录…", &mut self.library);
+                            if !self.libraries.is_empty() {
+                                ui.menu_button("已发现的 Steam 库", |ui| {
+                                    for library in &self.libraries {
+                                        let label = format!(
+                                            "{} · {}",
+                                            library.client.name(),
+                                            library.path.display()
+                                        );
+                                        if ui.button(label).clicked() {
+                                            self.library = Some(library.path.clone());
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            }
+                            browse
                         })
                         .inner;
                     if browse_library {
@@ -240,6 +285,9 @@ impl eframe::App for GameHaven {
                     }
                     self.download
                         .show(ui, &self.manifest, &self.library, app_id.ok());
+                    if let Ok(id) = app_id {
+                        self.show_steam_install(ui, id);
+                    }
                 });
             });
         });
@@ -254,6 +302,59 @@ impl eframe::App for GameHaven {
         if let Some(path) = self.library_dialog.take_picked() {
             self.library = Some(path);
             ui.ctx().request_repaint();
+        }
+        self.local_games.update_pickers(ui.ctx());
+    }
+}
+
+impl GameHaven {
+    fn show_steam_install(&mut self, ui: &mut egui::Ui, app_id: u32) {
+        ui.add_space(14.0);
+        ui.separator();
+        ui.heading("Steam 客户端安装");
+        if self.installed.as_ref().is_none_or(|(id, _)| *id != app_id) {
+            let path = self
+                .libraries
+                .iter()
+                .find_map(|library| steam_library::installed_location(library, app_id));
+            self.installed = Some((app_id, path));
+        }
+        if let Some((_, Some(path))) = &self.installed {
+            ui.label(format!("已安装 · {}", path.display()));
+            return;
+        }
+        let mut has_client = false;
+        for client in [
+            steam_library::Client::Native,
+            steam_library::Client::Flatpak,
+        ] {
+            if self
+                .libraries
+                .iter()
+                .any(|library| library.client == client)
+            {
+                has_client = true;
+                if ui.button(format!("在 {} 中安装", client.name())).clicked() {
+                    self.install_request = Some((app_id, client.install(app_id)));
+                }
+            }
+        }
+        if !has_client {
+            ui.weak("没有发现 Steam 库。请先启动 Steam 并完成初始化。");
+        }
+        if let Some((id, result)) = &self.install_request
+            && *id == app_id
+        {
+            match result {
+                Ok(()) => {
+                    ui.label(
+                        "已发起安装请求。请在 Steam 中确认许可证和安装目录，完成后刷新 Steam 库。",
+                    );
+                }
+                Err(error) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+            }
         }
     }
 }
