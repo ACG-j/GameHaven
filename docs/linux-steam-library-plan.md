@@ -30,6 +30,6 @@ GUI 已选定为 `eframe + egui 0.37`，使用纯 Rust 原生窗口和 `wgpu` �
 
 GameHaven 可识别原生与 Flatpak 的 Steam 配置、外部库和已安装应用，也可从已发现的库选择 Depot 下载目录。Steam 客户端安装按钮发出 `steam://install/<AppID>` 请求，由客户端处理许可证与安装位置。已用替代启动器验证请求参数，并用 SteamCMD 在临时目录真实安装 AppID `1007`，随后验证 GameHaven 能识别其安装清单和库路径。[Steam 浏览器协议](https://developer.valvesoftware.com/wiki/Steam_browser_protocol)
 
-「本地游戏」按所选账号保存游戏名称、启动文件和工作目录。写入前需退出 Steam，已有快捷方式保持原样，重复导入不会新增条目。Windows 游戏可在 Steam 快捷方式的兼容性属性里选择 Proton。已用临时账号配置导入 OpenTTD 15.3、检查重复导入后文件内容一致，并从写入的启动路径和工作目录用 Proton Experimental 启动到主菜单。真实 Steam 图形客户端内的重启加载和启动、真实 Flatpak 客户端仍待验证。[OpenTTD 15.3](https://www.openttd.org/downloads/openttd-releases/latest)
+「本地游戏」按所选账号保存游戏名称、启动文件和工作目录。写入前需退出 Steam，已有快捷方式保持原样，重复导入不会新增条目。Windows 游戏可在 Steam 快捷方式的兼容性属性里选择 Proton。已用临时账号配置导入 OpenTTD 15.3，重启 GameHaven 后重复导入，确认快捷方式文件未改变。再从写入的启动路径和工作目录用 Proton Experimental 启动了 OpenTTD。原生 Steam 图形客户端的独立测试会话已到登录阶段，账号内安装和快捷方式加载仍待验收。Flatpak 路径已用测试配置验证，当前机器没有 Flatpak 客户端。[OpenTTD 15.3](https://www.openttd.org/downloads/openttd-releases/latest)
 
 Denuvo 跨账号授权仍是独立的待研究需求。当前没有已验证的 Linux CLI 或共享库可供集成。
