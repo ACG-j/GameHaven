@@ -7,8 +7,6 @@ use egui_file_dialog::{FileDialog, FileDialogLabels};
 
 mod depot;
 mod fonts;
-mod local_games;
-mod shortcuts;
 mod steam_library;
 mod steam_store;
 
@@ -118,10 +116,7 @@ struct GameHaven {
     manifest_dialog: FileDialog,
     library_dialog: FileDialog,
     download: DepotPanel,
-    local_games: local_games::LocalGames,
     libraries: Vec<steam_library::Library>,
-    accounts: Vec<steam_library::SteamAccount>,
-    local_page: bool,
     installed: Option<(u32, Option<PathBuf>)>,
     install_request: Option<(u32, Result<(), String>)>,
 }
@@ -167,19 +162,15 @@ impl GameHaven {
                 .show_new_folder_button(false)
         };
 
-        let (libraries, accounts) = steam_library::discover();
         Self {
             app_id: String::new(),
             store_lookup: StoreLookup::default(),
             manifest: None,
             library: None,
             manifest_dialog: picker("manifest", labels.clone()),
-            library_dialog: picker("library", labels.clone()),
+            library_dialog: picker("library", labels),
             download: DepotPanel::default(),
-            local_games: local_games::LocalGames::new(labels),
-            libraries,
-            accounts,
-            local_page: false,
+            libraries: steam_library::discover(),
             installed: None,
             install_request: None,
         }
@@ -196,21 +187,13 @@ impl eframe::App for GameHaven {
                 ui.label(RichText::new("游栖 · GameHaven").size(27.0).strong());
                 ui.add_space(14.0);
 
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.local_page, false, "Steam 游戏");
-                    ui.selectable_value(&mut self.local_page, true, "本地游戏");
-                    if ui.button("刷新 Steam 库").clicked() {
-                        (self.libraries, self.accounts) = steam_library::discover();
-                        self.installed = None;
-                    }
-                });
+                if ui.button("刷新 Steam 库").clicked() {
+                    self.libraries = steam_library::discover();
+                    self.installed = None;
+                }
                 ui.add_space(10.0);
                 Frame::group(ui.style()).inner_margin(18).show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    if self.local_page {
-                        self.local_games.show(ui, &self.accounts);
-                        return;
-                    }
                     ui.heading("准备 Steam 游戏");
                     ui.add_space(12.0);
 
@@ -285,7 +268,10 @@ impl eframe::App for GameHaven {
                     }
                     self.download
                         .show(ui, &self.manifest, &self.library, app_id.ok());
-                    if let Ok(id) = app_id {
+                    self.download.show_import(ui, &self.libraries);
+                    if self.download.job.is_none()
+                        && let Ok(id) = app_id
+                    {
                         self.show_steam_install(ui, id);
                     }
                 });
@@ -303,7 +289,6 @@ impl eframe::App for GameHaven {
             self.library = Some(path);
             ui.ctx().request_repaint();
         }
-        self.local_games.update_pickers(ui.ctx());
     }
 }
 
@@ -366,6 +351,11 @@ struct DepotPanel {
     selected: usize,
     result: Option<Result<&'static str, String>>,
     last_progress: depot::Progress,
+    downloaded: Option<(u32, PathBuf)>,
+    import_library: Option<steam_library::Library>,
+    import_folder: String,
+    staged: Option<(steam_library::Library, u32)>,
+    handoff: Option<Result<(), String>>,
 }
 
 impl DepotPanel {
@@ -396,7 +386,14 @@ impl DepotPanel {
                 self.plan = Some(plan);
                 self.selected = 0;
             }
-            Ok(depot::Outcome::Downloaded) => self.result = Some(Ok("Depot 下载完成。")),
+            Ok(depot::Outcome::Downloaded(id, output)) => {
+                self.downloaded = Some((id, output));
+                self.result = Some(Ok("Depot 下载完成。"));
+            }
+            Ok(depot::Outcome::Staged(library, id)) => {
+                self.staged = Some((library, id));
+                self.result = Some(Ok("已有文件已放入 Steam 库。"));
+            }
             Ok(depot::Outcome::Cancelled) => self.result = Some(Ok("任务已取消。")),
             Err(message) => self.result = Some(Err(message)),
         }
@@ -419,6 +416,8 @@ impl DepotPanel {
                 ui.spinner();
                 ui.label(if job.cancelling() {
                     "正在取消…"
+                } else if self.downloaded.is_some() {
+                    "正在复制到 Steam 库…"
                 } else if self.plan.is_some() {
                     "正在下载 Depot…"
                 } else {
@@ -466,6 +465,9 @@ impl DepotPanel {
                 .clicked()
                 && let Some(library) = library
             {
+                self.downloaded = None;
+                self.staged = None;
+                self.handoff = None;
                 self.start(depot::Request::Fetch {
                     app_id: plan.app_id,
                     depot: plan.depots[self.selected],
@@ -486,6 +488,115 @@ impl DepotPanel {
             None => {}
         }
         Self::show_progress(ui, &self.last_progress);
+    }
+
+    fn show_import(&mut self, ui: &mut egui::Ui, libraries: &[steam_library::Library]) {
+        let Some((id, source)) = &self.downloaded else {
+            return;
+        };
+        if self.job.is_some() {
+            return;
+        }
+        ui.separator();
+        ui.heading("复用已下载文件");
+        if let Some((library, id)) = &self.staged {
+            let verifying = steam_library::installed_location(library, *id).is_some();
+            let button = if verifying {
+                "在 Steam 中校验"
+            } else {
+                "在 Steam 中继续安装"
+            };
+            if ui.button(button).clicked() {
+                self.handoff = Some(if verifying {
+                    library.client.verify(*id)
+                } else {
+                    library.client.install(*id)
+                });
+            }
+            match &self.handoff {
+                Some(Ok(())) => {
+                    ui.label("已向 Steam 发出请求。请在同一 Steam 库继续安装或校验。");
+                }
+                Some(Err(error)) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+                None => {}
+            }
+            return;
+        }
+        if libraries.is_empty() {
+            ui.label("未发现 Steam 库。请先在 Steam 中配置库目录，再刷新 Steam 库。");
+            return;
+        }
+        if !self
+            .import_library
+            .as_ref()
+            .is_some_and(|library| libraries.contains(library))
+        {
+            self.import_library = libraries
+                .iter()
+                .find(|library| steam_library::app_record(library, *id).is_some())
+                .or_else(|| {
+                    libraries
+                        .iter()
+                        .find(|library| source.parent() == Some(library.path.as_path()))
+                })
+                .or_else(|| libraries.first())
+                .cloned();
+        }
+        let library_label = |library: &steam_library::Library| {
+            format!("{} · {}", library.client.name(), library.path.display())
+        };
+        egui::ComboBox::from_id_salt("import-library")
+            .width(290.0)
+            .selected_text(
+                self.import_library
+                    .as_ref()
+                    .map(library_label)
+                    .unwrap_or_default(),
+            )
+            .show_ui(ui, |ui| {
+                for library in libraries {
+                    if ui
+                        .selectable_value(
+                            &mut self.import_library,
+                            Some(library.clone()),
+                            library_label(library),
+                        )
+                        .clicked()
+                    {
+                        self.import_folder.clear();
+                    }
+                }
+            });
+        let Some(library) = &self.import_library else {
+            return;
+        };
+        let registered = steam_library::app_record(library, *id);
+        let folder = if let Some((folder, _)) = &registered {
+            ui.label(format!("Steam 安装目录 · {folder}"));
+            folder.as_str()
+        } else {
+            let label = ui.label("Steam 安装目录名（steamapps/common 下）");
+            ui.add(TextEdit::singleline(&mut self.import_folder).desired_width(260.0))
+                .labelled_by(label.id);
+            ui.weak("可先在 Steam 开始安装、暂停，再刷新库以自动读取目录名。");
+            self.import_folder.trim()
+        };
+        if ui
+            .add_enabled(
+                steam_library::valid_folder(folder),
+                egui::Button::new("复制到 Steam 库"),
+            )
+            .clicked()
+        {
+            self.start(depot::Request::Stage {
+                app_id: *id,
+                source: source.clone(),
+                library: library.clone(),
+                folder: folder.to_owned(),
+            });
+        }
     }
 
     fn show_progress(ui: &mut egui::Ui, progress: &depot::Progress) {

@@ -26,6 +26,14 @@ impl Client {
     }
 
     pub fn install(self, app_id: u32) -> Result<(), String> {
+        self.open("install", app_id)
+    }
+
+    pub fn verify(self, app_id: u32) -> Result<(), String> {
+        self.open("validate", app_id)
+    }
+
+    fn open(self, action: &str, app_id: u32) -> Result<(), String> {
         let mut command = match self {
             Self::Native => Command::new("steam"),
             Self::Flatpak => {
@@ -35,7 +43,7 @@ impl Client {
             }
         };
         let mut child = command
-            .arg(format!("steam://install/{app_id}"))
+            .arg(format!("steam://{action}/{app_id}"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -48,16 +56,9 @@ impl Client {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SteamAccount {
-    pub client: Client,
-    pub steam_id: u32,
-    pub config_dir: PathBuf,
-}
-
-pub fn discover() -> (Vec<Library>, Vec<SteamAccount>) {
+pub fn discover() -> Vec<Library> {
     let Some(home) = env::home_dir() else {
-        return (Vec::new(), Vec::new());
+        return Vec::new();
     };
     let data = env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -66,7 +67,7 @@ pub fn discover() -> (Vec<Library>, Vec<SteamAccount>) {
     discover_at(&home, &data)
 }
 
-fn discover_at(home: &Path, data: &Path) -> (Vec<Library>, Vec<SteamAccount>) {
+fn discover_at(home: &Path, data: &Path) -> Vec<Library> {
     let roots = [
         (Client::Native, data.join("Steam")),
         (Client::Native, home.join(".local/share/Steam")),
@@ -88,7 +89,6 @@ fn discover_at(home: &Path, data: &Path) -> (Vec<Library>, Vec<SteamAccount>) {
     ];
     let mut seen = Vec::new();
     let mut libraries = Vec::new();
-    let mut accounts = Vec::new();
     for (client, root) in roots {
         let Ok(root) = root.canonicalize() else {
             continue;
@@ -110,46 +110,69 @@ fn discover_at(home: &Path, data: &Path) -> (Vec<Library>, Vec<SteamAccount>) {
                 libraries.push(library);
             }
         }
-
-        if let Ok(entries) = fs::read_dir(root.join("userdata")) {
-            for entry in entries.flatten() {
-                let Ok(steam_id) = entry.file_name().to_string_lossy().parse::<u32>() else {
-                    continue;
-                };
-                let config_dir = entry.path().join("config");
-                if steam_id > 0 && config_dir.is_dir() {
-                    accounts.push(SteamAccount {
-                        client,
-                        steam_id,
-                        config_dir,
-                    });
-                }
-            }
-        }
     }
-    accounts.sort_by(|a, b| a.config_dir.cmp(&b.config_dir));
-    (libraries, accounts)
+    libraries
 }
 
 pub fn installed_location(library: &Library, app_id: u32) -> Option<PathBuf> {
+    let (folder, flags) = app_record(library, app_id)?;
+    let path = library.path.join("steamapps/common").join(folder);
+    (flags & 4 != 0 && path.is_dir()).then_some(path)
+}
+
+pub fn app_record(library: &Library, app_id: u32) -> Option<(String, u32)> {
     let steamapps = library.path.join("steamapps");
     let vdf = read_vdf(
         &steamapps.join(format!("appmanifest_{app_id}.acf")),
         "AppState",
     )?;
     let app = vdf.get_obj()?;
-    if field(app, "appid")?.parse::<u32>().ok()? != app_id
-        || field(app, "StateFlags")?.parse::<u32>().ok()? & 4 == 0
+    if field(app, "appid")?.parse::<u32>().ok()? != app_id {
+        return None;
+    }
+    let folder = field(app, "installdir")?;
+    let flags = field(app, "StateFlags")?.parse().ok()?;
+    valid_folder(folder).then(|| (folder.to_owned(), flags))
+}
+
+pub fn valid_folder(folder: &str) -> bool {
+    !folder.contains(['/', '\\'])
+        && !folder.contains(char::is_control)
+        && matches!(
+            Path::new(folder).components().next(),
+            Some(Component::Normal(_))
+        )
+}
+
+pub fn check_import_target(library: &Library, app_id: u32, folder: &str) -> Result<(), String> {
+    if let Some((registered, _)) = app_record(library, app_id)
+        && folder != registered
     {
-        return None;
+        return Err(format!("这个 AppID 的 Steam 安装目录是 {registered}。"));
     }
-    let folder = Path::new(field(app, "installdir")?);
-    let mut components = folder.components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return None;
+    for entry in library
+        .path
+        .join("steamapps")
+        .read_dir()
+        .map_err(|err| err.to_string())?
+    {
+        let entry = entry.map_err(|err| err.to_string())?;
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|name| {
+            name.strip_prefix("appmanifest_")?
+                .strip_suffix(".acf")?
+                .parse::<u32>()
+                .ok()
+        }) else {
+            continue;
+        };
+        if id != app_id
+            && app_record(library, id).is_some_and(|(registered, _)| registered == folder)
+        {
+            return Err(format!("该目录已由 Steam AppID {id} 使用。"));
+        }
     }
-    let path = steamapps.join("common").join(folder);
-    path.is_dir().then_some(path)
+    Ok(())
 }
 
 fn read_vdf(path: &Path, root: &str) -> Option<Value<'static>> {
@@ -200,7 +223,6 @@ mod tests {
         let extra = root.join("External Steam Library");
         fs::create_dir_all(native.join("steamapps")).unwrap();
         fs::create_dir_all(flatpak.join("steamapps")).unwrap();
-        fs::create_dir_all(flatpak.join("userdata/42/config")).unwrap();
         let game = extra.join("steamapps/common/Test Game");
         fs::create_dir_all(&game).unwrap();
         fs::write(
@@ -216,9 +238,13 @@ mod tests {
             r#""AppState" { "appid" "440" "StateFlags" "4" "installdir" "Test Game" }"#,
         )
         .unwrap();
-        let (libraries, accounts) = discover_at(root, &root.join(".local/share"));
+        let libraries = discover_at(root, &root.join(".local/share"));
         assert_eq!(libraries.len(), 3);
-        assert_eq!(accounts[0].client, Client::Flatpak);
+        assert!(
+            libraries
+                .iter()
+                .any(|library| library.client == Client::Flatpak)
+        );
         assert_eq!(
             libraries
                 .iter()

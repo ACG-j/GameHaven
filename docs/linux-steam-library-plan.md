@@ -26,10 +26,12 @@ GUI 已选定为 `eframe + egui 0.37`，使用纯 Rust 原生窗口和 `wgpu` �
 
 2026-11-26 在 X11 下验证了有效和损坏清单、真实下载与取消。TF2 Dedicated Server 的 AppID `232250`、Depot `232257` 和 Manifest `4797708003880603728` 经 GameHaven 下载成功，产出两个文件，共 9,989 字节。测试进程另覆盖了进度显示及退出码为 0 但无完成回执的情况。[DepotDownloader 3.4.0 下载实现](https://github.com/SteamRE/DepotDownloader/blob/DepotDownloader_3.4.0/DepotDownloader/ContentDownloader.cs)
 
-## Steam 库与本地游戏
+## Steam 库与下载文件复用
 
 GameHaven 可识别原生与 Flatpak 的 Steam 配置、外部库和已安装应用，也可从已发现的库选择 Depot 下载目录。Steam 客户端安装按钮发出 `steam://install/<AppID>` 请求，由客户端处理许可证与安装位置。已用替代启动器验证请求参数，并用 SteamCMD 在临时目录真实安装 AppID `1007`，随后验证 GameHaven 能识别其安装清单和库路径。[Steam 浏览器协议](https://developer.valvesoftware.com/wiki/Steam_browser_protocol)
 
-「本地游戏」按所选账号保存游戏名称、启动文件和工作目录。写入前需退出 Steam，已有快捷方式保持原样，重复导入不会新增条目。Windows 游戏可在 Steam 快捷方式的兼容性属性里选择 Proton。已用临时账号配置导入 OpenTTD 15.3，重启 GameHaven 后重复导入，确认快捷方式文件未改变。再从写入的启动路径和工作目录用 Proton Experimental 启动了 OpenTTD。原生 Steam 图形客户端的独立测试会话已到登录阶段，账号内安装和快捷方式加载仍待验收。Flatpak 路径已用测试配置验证，当前机器没有 Flatpak 客户端。[OpenTTD 15.3](https://www.openttd.org/downloads/openttd-releases/latest)
+Depot 下载完成后可将文件复制到指定 Steam 库的 `steamapps/common` 下。GameHaven 优先读取已有 AppID 安装记录中的 `installdir`，仅写入缺失的文件。回到同一个 Steam 库继续安装或校验，Steam 会识别已有文件并获取缺失内容。应用的安装状态和授权由 Steam 处理。[Steam 支持文档](https://help.steampowered.com/en/faqs/view/4578-18A7-C819-8620)
+
+已在隔离 X11 会话用先前真实下载的 Depot 文件验证复制，确认已有文件和 Steam 安装记录保持原样。替代启动器捕获到了安装和校验两种请求。登录客户端后的发现文件和补齐流程待验收。
 
 Denuvo 跨账号授权仍是独立的待研究需求。当前没有已验证的 Linux CLI 或共享库可供集成。

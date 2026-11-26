@@ -12,6 +12,8 @@ use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Deserialize;
 
+use crate::steam_library::{self, Library};
+
 const MAX_LINE: u64 = 1024 * 1024;
 
 #[derive(Clone, Copy)]
@@ -32,11 +34,18 @@ pub enum Request {
         depot: Depot,
         library: PathBuf,
     },
+    Stage {
+        app_id: u32,
+        source: PathBuf,
+        library: Library,
+        folder: String,
+    },
 }
 
 pub enum Outcome {
     Inspected(Plan),
-    Downloaded,
+    Downloaded(u32, PathBuf),
+    Staged(Library, u32),
     Cancelled,
 }
 
@@ -183,7 +192,7 @@ fn execute(
                 .arg("-depot")
                 .arg(depot.id.to_string())
                 .arg("-dir")
-                .arg(output);
+                .arg(&output);
             if let Some(manifest_id) = depot.manifest {
                 command.arg("-manifest").arg(manifest_id.to_string());
             }
@@ -204,9 +213,134 @@ fn execute(
             if !completed {
                 return Err("DepotDownloader 退出了，但没有报告所选 Depot 下载完成。".into());
             }
-            Ok(Outcome::Downloaded)
+            Ok(Outcome::Downloaded(app_id, output))
+        }
+        Request::Stage {
+            app_id,
+            source,
+            library,
+            folder,
+        } => {
+            if !steam_library::valid_folder(&folder) {
+                return Err("请输入 Steam 使用的游戏安装目录名。".into());
+            }
+            steam_library::check_import_target(&library, app_id, &folder)?;
+            let result = stage_files(
+                &source,
+                &library.path.join("steamapps"),
+                &folder,
+                cancel,
+                progress,
+            );
+            match result {
+                Ok(()) => Ok(Outcome::Staged(library, app_id)),
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => Ok(Outcome::Cancelled),
+                Err(err) => Err(format!("无法将文件放入 Steam 库（{err}）。")),
+            }
         }
     }
+}
+
+fn stage_files(
+    source: &Path,
+    steamapps: &Path,
+    folder: &str,
+    cancel: &AtomicBool,
+    progress: &Mutex<Progress>,
+) -> io::Result<()> {
+    let source = source.canonicalize()?;
+    let common = steamapps.join("common");
+    if !steamapps.symlink_metadata()?.is_dir() {
+        return Err(io::Error::other("steamapps 不是普通目录"));
+    }
+    let target = common.join(folder);
+    if target.starts_with(&source) || source.starts_with(&target) {
+        return Err(io::Error::other("下载目录与 Steam 安装目录重叠"));
+    }
+    ensure_directory(&common)?;
+    ensure_directory(&target)?;
+    progress.lock().unwrap().output = Some(target.clone());
+    merge_depot(&source, &target, cancel)
+}
+
+fn ensure_directory(path: &Path) -> io::Result<()> {
+    match std::fs::create_dir(path) {
+        Err(err)
+            if err.kind() == io::ErrorKind::AlreadyExists && path.symlink_metadata()?.is_dir() =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
+}
+
+fn merge_depot(source: &Path, target: &Path, cancel: &AtomicBool) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut directories = vec![(source.to_path_buf(), target.to_path_buf())];
+    let mut buffer = [0; 64 * 1024];
+    while let Some((source, target)) = directories.pop() {
+        for entry in source.read_dir()? {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let entry = entry?;
+            if entry.file_name() == ".DepotDownloader" {
+                continue;
+            }
+            let destination = target.join(entry.file_name());
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                ensure_directory(&destination)?;
+                directories.push((entry.path(), destination));
+                continue;
+            }
+            if !kind.is_file() {
+                return Err(io::Error::other("Depot 含有符号链接或特殊文件"));
+            }
+            match destination.symlink_metadata() {
+                Ok(metadata) if metadata.is_file() => continue,
+                Ok(_) => return Err(io::Error::other("Steam 库中存在同名目录或特殊文件")),
+                Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+                Err(_) => {}
+            }
+            let file = rustix::fs::open(
+                entry.path(),
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )?;
+            let mut file = std::fs::File::from(file);
+            let metadata = file.metadata()?;
+            if !metadata.is_file() {
+                return Err(io::Error::other("Depot 含有特殊文件"));
+            }
+            let mut temporary = tempfile::NamedTempFile::new_in(&target)?;
+            loop {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(io::ErrorKind::Interrupted.into());
+                }
+                let bytes = file.read(&mut buffer)?;
+                if bytes == 0 {
+                    break;
+                }
+                temporary.write_all(&buffer[..bytes])?;
+            }
+            temporary
+                .as_file()
+                .set_permissions(std::fs::Permissions::from_mode(
+                    0o600 | (metadata.permissions().mode() & 0o155),
+                ))?;
+            match temporary.persist_noclobber(&destination) {
+                Ok(_) => {}
+                Err(err)
+                    if err.error.kind() == io::ErrorKind::AlreadyExists
+                        && destination.symlink_metadata()?.is_file() => {}
+                Err(err) => return Err(err.error),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn tool(variable: &str, default: &str) -> Result<Command, String> {
@@ -369,7 +503,9 @@ fn download_fraction(line: &str) -> Option<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{download_fraction, parse_plan};
+    use super::{Progress, download_fraction, parse_plan, stage_files};
+    use std::fs;
+    use std::sync::{Mutex, atomic::AtomicBool};
 
     #[test]
     fn manifest_ids_keep_full_integer_precision() {
@@ -385,5 +521,66 @@ mod tests {
         assert_eq!(download_fraction("100,00% fixture.bin"), Some(1.0));
         assert_eq!(download_fraction("101% fixture.bin"), None);
         assert_eq!(download_fraction("Total downloaded: 7 bytes"), None);
+    }
+
+    #[test]
+    fn imports_only_missing_files_and_leaves_steam_state_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("depot");
+        let steamapps = root.path().join("steamapps");
+        let target = steamapps.join("common/Test Game");
+        fs::create_dir_all(source.join(".DepotDownloader")).unwrap();
+        fs::create_dir_all(source.join("data")).unwrap();
+        fs::create_dir_all(target.join("data")).unwrap();
+        fs::write(source.join("data/new.bin"), b"new payload").unwrap();
+        fs::write(source.join("data/existing.bin"), b"different payload").unwrap();
+        fs::write(target.join("data/existing.bin"), b"existing payload").unwrap();
+        let record = steamapps.join("appmanifest_42.acf");
+        fs::write(&record, b"steam state").unwrap();
+
+        stage_files(
+            &source,
+            &steamapps,
+            "Test Game",
+            &AtomicBool::new(false),
+            &Mutex::new(Progress::default()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read(target.join("data/new.bin")).unwrap(),
+            b"new payload"
+        );
+        assert_eq!(
+            fs::read(target.join("data/existing.bin")).unwrap(),
+            b"existing payload"
+        );
+        assert_eq!(fs::read(record).unwrap(), b"steam state");
+        assert!(!target.join(".DepotDownloader").exists());
+        assert!(source.join("data/new.bin").is_file());
+    }
+
+    #[test]
+    fn refuses_a_symlink_as_the_steam_game_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("depot");
+        let steamapps = root.path().join("steamapps");
+        let external = root.path().join("external");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&external).unwrap();
+        fs::create_dir_all(steamapps.join("common")).unwrap();
+        std::os::unix::fs::symlink(&external, steamapps.join("common/Test Game")).unwrap();
+        fs::write(source.join("new.bin"), b"new payload").unwrap();
+        assert!(
+            stage_files(
+                &source,
+                &steamapps,
+                "Test Game",
+                &AtomicBool::new(false),
+                &Mutex::new(Progress::default())
+            )
+            .is_err()
+        );
+        assert!(!external.join("new.bin").exists());
     }
 }

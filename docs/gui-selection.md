@@ -44,4 +44,4 @@
 
 在 Linux 上使用 Rust 1.95 或更新版本运行 `cargo run --locked`。界面优先使用系统安装的 Noto Sans CJK SC Regular 绘制中英文，也支持 Noto Sans SC、思源黑体等系统字体。缺失字形由 egui 继续回退。应用使用 `egui-file-dialog` 在窗口内选择清单文件和目标库目录。
 
-GameHaven 支持按 AppID 查询 Steam 商店、预览本地清单、匿名下载单个 Depot、发起 Steam 客户端安装请求和导入本地游戏。外部工具配置及验证结果见 [Linux Steam 清单与游戏库工具计划](linux-steam-library-plan.md)。
+GameHaven 支持按 AppID 查询 Steam 商店、预览本地清单、匿名下载单个 Depot，以及将已有文件交给 Steam 安装或校验。外部工具配置及验证结果见 [Linux Steam 清单与游戏库工具计划](linux-steam-library-plan.md)。
