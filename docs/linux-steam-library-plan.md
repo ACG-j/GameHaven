@@ -1,6 +1,8 @@
 # 游栖（GameHaven）— Linux Steam 清单与游戏库工具计划
 
-GameHaven 自建 UI。后端只接可独立运行的 CLI 或有明确调用接口的 Linux 共享库。首版选用独立 CLI，通过子进程参数、标准输出、标准错误和退出码通信。UI 框架待定。
+GameHaven 自建 UI。后端只接可独立运行的 CLI 或有明确调用接口的 Linux 共享库。首版选用独立 CLI，通过子进程参数、标准输出、标准错误和退出码通信。
+
+GUI 已选定为 `eframe + egui 0.37`，使用纯 Rust 原生窗口和 `wgpu` 渲染，不使用 Tauri、WebView、GTK 或 Qt。具体比较和 Linux 验证边界见 [GUI 选型](gui-selection.md)。
 
 ## 已验证的 Linux CLI
 
