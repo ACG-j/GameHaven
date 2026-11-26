@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, CentralPanel, Frame, RichText, ScrollArea, TextEdit};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
+mod fonts;
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -15,7 +17,10 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "游栖 · GameHaven",
         options,
-        Box::new(|_| Ok(Box::new(GameHaven::new()))),
+        Box::new(|creation| {
+            fonts::configure(&creation.egui_ctx);
+            Ok(Box::new(GameHaven::new()))
+        }),
     )
 }
 

@@ -42,6 +42,6 @@
 
 ## 运行原型
 
-在 Linux 上使用 Rust 1.95 或更新版本运行 `cargo run --locked`。中文界面通过系统字体回退绘制，需要安装可用的中文字体，例如 Noto Sans CJK。应用使用 `egui-file-dialog` 在窗口内选择清单文件和目标库目录。
+在 Linux 上使用 Rust 1.95 或更新版本运行 `cargo run --locked`。界面优先使用系统安装的 Noto Sans CJK SC Regular 绘制中英文，也支持 Noto Sans SC、思源黑体等系统字体。缺失字形由 egui 继续回退。应用使用 `egui-file-dialog` 在窗口内选择清单文件和目标库目录。
 
 原型验证窗口和输入流程。AppID 校验仅覆盖数值格式，清单文件和目录路径保留在当前会话中。Steam 查询、清单解析和安装将在业务接口验收后接入。
