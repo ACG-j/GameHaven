@@ -1,19 +1,50 @@
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
+use std::time::Duration;
 
-use eframe::egui::{self, CentralPanel, Frame, RichText, ScrollArea, TextEdit};
+use eframe::egui::{self, RichText, ScrollArea, TextEdit};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
 mod depot;
+mod env_panel;
 mod fonts;
+mod pages;
+mod sls;
+mod steam;
 mod steam_library;
 mod steam_store;
+mod ui;
 
 type LookupResult = Result<Option<steam_store::StoreApp>, String>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Page {
+    Library,
+    Add,
+    Environment,
+    Settings,
+}
+
+impl Page {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Library => "游戏库",
+            Self::Add => "添加游戏",
+            Self::Environment => "环境",
+            Self::Settings => "设置",
+        }
+    }
+}
+
+pub(crate) enum RestartState {
+    Idle,
+    Running(Receiver<Result<String, String>>),
+    Done(Result<String, String>),
+}
+
 #[derive(Default)]
-enum StoreLookup {
+pub(crate) enum StoreLookup {
     #[default]
     Idle,
     Pending(u32, Receiver<LookupResult>),
@@ -21,7 +52,11 @@ enum StoreLookup {
 }
 
 impl StoreLookup {
-    fn start(&mut self, app_id: u32, ctx: &egui::Context) {
+    pub(crate) fn busy(&self) -> bool {
+        matches!(self, Self::Pending(..))
+    }
+
+    pub(crate) fn start(&mut self, app_id: u32, ctx: &egui::Context) {
         let ctx = ctx.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         *self = match thread::Builder::new()
@@ -47,7 +82,7 @@ impl StoreLookup {
         *self = Self::Finished(*app_id, result);
     }
 
-    fn show(&self, ui: &mut egui::Ui, current_id: Option<u32>) {
+    pub(crate) fn show(&self, ui: &mut egui::Ui, current_id: Option<u32>) {
         match self {
             Self::Pending(app_id, _) => {
                 ui.horizontal(|ui| {
@@ -93,8 +128,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("io.github.ACG-j.GameHaven")
-            .with_inner_size([720.0, 480.0])
-            .with_min_inner_size([480.0, 360.0]),
+            .with_inner_size([1040.0, 720.0])
+            .with_min_inner_size([880.0, 600.0]),
         ..Default::default()
     };
 
@@ -103,26 +138,31 @@ fn main() -> eframe::Result {
         options,
         Box::new(|creation| {
             fonts::configure(&creation.egui_ctx);
-            Ok(Box::new(GameHaven::new()))
+            Ok(Box::new(GameHaven::new(&creation.egui_ctx)))
         }),
     )
 }
 
-struct GameHaven {
-    app_id: String,
-    store_lookup: StoreLookup,
-    manifest: Option<PathBuf>,
-    library: Option<PathBuf>,
-    manifest_dialog: FileDialog,
-    library_dialog: FileDialog,
-    download: DepotPanel,
-    libraries: Vec<steam_library::Library>,
-    installed: Option<(u32, Option<PathBuf>)>,
-    install_request: Option<(u32, Result<(), String>)>,
+pub(crate) struct GameHaven {
+    pub(crate) page: Page,
+    pub(crate) app_id: String,
+    pub(crate) store_lookup: StoreLookup,
+    pub(crate) manifest: Option<PathBuf>,
+    pub(crate) library: Option<PathBuf>,
+    pub(crate) manifest_dialog: FileDialog,
+    pub(crate) library_dialog: FileDialog,
+    pub(crate) download: DepotPanel,
+    pub(crate) libraries: Vec<steam_library::Library>,
+    pub(crate) installed: Option<(u32, Option<PathBuf>)>,
+    pub(crate) install_request: Option<(u32, Result<(), String>)>,
+    pub(crate) env: env_panel::EnvPanel,
+    pub(crate) restart: RestartState,
+    pub(crate) add_result: Option<Result<String, String>>,
+    pub(crate) auto_restart: bool,
 }
 
 impl GameHaven {
-    fn new() -> Self {
+    fn new(ctx: &egui::Context) -> Self {
         let labels = FileDialogLabels {
             title_select_file: "选择 Steam 清单".into(),
             title_select_directory: "选择目标库目录".into(),
@@ -163,6 +203,7 @@ impl GameHaven {
         };
 
         Self {
+            page: Page::Library,
             app_id: String::new(),
             store_lookup: StoreLookup::default(),
             manifest: None,
@@ -173,131 +214,161 @@ impl GameHaven {
             libraries: steam_library::discover(),
             installed: None,
             install_request: None,
+            env: env_panel::EnvPanel::new(ctx),
+            restart: RestartState::Idle,
+            add_result: None,
+            auto_restart: true,
         }
     }
-}
 
-impl eframe::App for GameHaven {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn poll_background(&mut self, ctx: &egui::Context) {
         self.store_lookup.poll();
-        self.download.poll(ui.ctx(), &mut self.app_id);
-        CentralPanel::default().show(ui, |ui| {
-            ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(12.0);
-                ui.label(RichText::new("游栖 · GameHaven").size(27.0).strong());
-                ui.add_space(14.0);
+        self.env.poll(ctx);
+        self.poll_restart(ctx);
+        self.download.poll(ctx, &mut self.app_id);
+    }
 
-                if ui.button("刷新 Steam 库").clicked() {
-                    self.libraries = steam_library::discover();
-                    self.installed = None;
+    fn poll_restart(&mut self, ctx: &egui::Context) {
+        let result = match &self.restart {
+            RestartState::Running(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                    None
                 }
-                ui.add_space(10.0);
-                Frame::group(ui.style()).inner_margin(18).show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    ui.heading("准备 Steam 游戏");
-                    ui.add_space(12.0);
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("重启任务意外结束。".to_owned()))
+                }
+            },
+            _ => None,
+        };
+        if let Some(result) = result {
+            self.restart = RestartState::Done(result);
+            self.env.refresh(ctx);
+        }
+    }
 
-                    let label = ui.label("Steam AppID");
-                    let app_id = ui
-                        .horizontal(|ui| {
-                            ui.add(
-                                TextEdit::singleline(&mut self.app_id)
-                                    .hint_text("输入 Steam AppID")
-                                    .desired_width(220.0),
-                            )
-                            .labelled_by(label.id);
-                            let app_id = validate_app_id(&self.app_id);
-                            let busy = matches!(self.store_lookup, StoreLookup::Pending(..));
-                            if ui
-                                .add_enabled(
-                                    app_id.is_ok() && !busy,
-                                    egui::Button::new("查询 Steam 商店"),
-                                )
-                                .clicked()
-                                && let Ok(app_id) = app_id
-                            {
-                                self.store_lookup.start(app_id, ui.ctx());
-                            }
-                            app_id
-                        })
-                        .inner;
-                    if !self.app_id.trim().is_empty()
-                        && let Err(message) = app_id
-                    {
-                        ui.colored_label(ui.visuals().error_fg_color, message);
-                    }
-                    self.store_lookup.show(ui, app_id.ok());
+    pub(crate) fn start_restart(&mut self, ctx: &egui::Context) {
+        if matches!(self.restart, RestartState::Running(_)) {
+            return;
+        }
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match thread::Builder::new()
+            .name("steam-restart".into())
+            .spawn(move || {
+                let result = steam::process::restart();
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            }) {
+            Ok(_) => self.restart = RestartState::Running(receiver),
+            Err(error) => {
+                self.restart = RestartState::Done(Err(format!("无法启动任务（{error}）。")));
+            }
+        }
+    }
 
-                    ui.add_space(12.0);
-                    let had_manifest = self.manifest.is_some();
-                    let browse_manifest = ui
-                        .add_enabled_ui(self.download.job.is_none(), |ui| {
-                            path_input(ui, "本地清单", "选择文件…", &mut self.manifest)
-                        })
-                        .inner;
-                    if browse_manifest {
-                        self.manifest_dialog.pick_file();
-                    }
-                    if had_manifest && self.manifest.is_none() {
-                        self.download = DepotPanel::default();
-                    }
-                    ui.add_space(10.0);
-                    let browse_library = ui
-                        .add_enabled_ui(self.download.job.is_none(), |ui| {
-                            let browse = path_input(ui, "目标库", "选择目录…", &mut self.library);
-                            if !self.libraries.is_empty() {
-                                ui.menu_button("已发现的 Steam 库", |ui| {
-                                    for library in &self.libraries {
-                                        let label = format!(
-                                            "{} · {}",
-                                            library.client.name(),
-                                            library.path.display()
-                                        );
-                                        if ui.button(label).clicked() {
-                                            self.library = Some(library.path.clone());
-                                            ui.close();
-                                        }
-                                    }
-                                });
-                            }
-                            browse
-                        })
-                        .inner;
-                    if browse_library {
-                        self.library_dialog.pick_directory();
-                    }
-                    self.download
-                        .show(ui, &self.manifest, &self.library, app_id.ok());
-                    self.download.show_import(ui, &self.libraries);
-                    if self.download.job.is_none()
-                        && let Ok(id) = app_id
-                    {
-                        self.show_steam_install(ui, id);
-                    }
-                });
+    pub(crate) fn add_to_slssteam(&mut self, app_id: u32, ctx: &egui::Context) {
+        let Some(path) = steam::env::sls_config_path() else {
+            self.add_result = Some(Err("没有找到 SLSsteam 的 config.yaml。".to_owned()));
+            return;
+        };
+        match sls::config::Config::new(path).add_app(app_id) {
+            Ok(true) => {
+                self.add_result = Some(Ok(format!("已把 {app_id} 加入 AdditionalApps。")));
+                if self.auto_restart {
+                    self.start_restart(ctx);
+                }
+            }
+            Ok(false) => {
+                self.add_result = Some(Ok(format!("{app_id} 已经在 AdditionalApps 里。")));
+            }
+            Err(error) => self.add_result = Some(Err(error)),
+        }
+    }
+
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(16.0);
+        ui.indent("sidebar-top", |ui| {
+            ui.label(RichText::new("游栖").size(19.0).strong());
+            ui.label(
+                RichText::new("GameHaven")
+                    .size(11.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        });
+        ui.add_space(20.0);
+
+        for page in [
+            Page::Library,
+            Page::Add,
+            Page::Environment,
+            Page::Settings,
+        ] {
+            if ui::nav_item(ui, page.title(), self.page == page) {
+                self.page = page;
+            }
+            ui.add_space(2.0);
+        }
+
+        let remaining = ui.available_height();
+        if remaining > 96.0 {
+            ui.add_space(remaining - 92.0);
+        }
+        ui.separator();
+        ui.add_space(6.0);
+        ui.indent("sidebar-bottom", |ui| {
+            if let Some((ok, warn, error)) = self.env.summary() {
+                let summary = if error > 0 {
+                    format!("体检 {ok} 正常 · {error} 异常")
+                } else if warn > 0 {
+                    format!("体检 {ok} 正常 · {warn} 注意")
+                } else {
+                    format!("体检 {ok} 项全正常")
+                };
+                ui.label(
+                    RichText::new(summary)
+                        .size(11.5)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            } else {
+                ui.label(
+                    RichText::new("正在检查…")
+                        .size(11.5)
+                        .color(ui.visuals().weak_text_color()),
+                );
+            }
+            ui.horizontal(|ui| {
+                let running = self.env.steam_running();
+                ui::status_dot(
+                    ui,
+                    if running {
+                        ui::OK
+                    } else {
+                        ui.visuals().weak_text_color()
+                    },
+                );
+                ui.label(
+                    RichText::new(if running {
+                        "Steam 运行中"
+                    } else {
+                        "Steam 未运行"
+                    })
+                    .size(12.0),
+                );
             });
         });
-
-        self.manifest_dialog.update(ui.ctx());
-        if let Some(path) = self.manifest_dialog.take_picked() {
-            self.manifest = Some(path);
-            self.download = DepotPanel::default();
-            ui.ctx().request_repaint();
-        }
-        self.library_dialog.update(ui.ctx());
-        if let Some(path) = self.library_dialog.take_picked() {
-            self.library = Some(path);
-            ui.ctx().request_repaint();
-        }
     }
-}
 
-impl GameHaven {
-    fn show_steam_install(&mut self, ui: &mut egui::Ui, app_id: u32) {
+    pub(crate) fn show_steam_install(&mut self, ui: &mut egui::Ui, app_id: u32) {
         ui.add_space(14.0);
         ui.separator();
         ui.heading("Steam 客户端安装");
-        if self.installed.as_ref().is_none_or(|(id, _)| *id != app_id) {
+        if self
+            .installed
+            .as_ref()
+            .is_none_or(|(id, _)| *id != app_id)
+        {
             let path = self
                 .libraries
                 .iter()
@@ -332,9 +403,7 @@ impl GameHaven {
         {
             match result {
                 Ok(()) => {
-                    ui.label(
-                        "已发起安装请求。请在 Steam 中确认许可证和安装目录，完成后刷新 Steam 库。",
-                    );
+                    ui.label("已发起安装请求。请在 Steam 中确认许可证和安装目录。");
                 }
                 Err(error) => {
                     ui.colored_label(ui.visuals().error_fg_color, error);
@@ -344,8 +413,54 @@ impl GameHaven {
     }
 }
 
+impl eframe::App for GameHaven {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.poll_background(ui.ctx());
+
+        let height = ui.available_height();
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui::SIDEBAR_WIDTH, height),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| self.sidebar(ui),
+            );
+            ui.separator();
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(16.0);
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(16.0);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(780.0, ui.available_height()),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| match self.page {
+                                Page::Library => self.library_page(ui),
+                                Page::Add => self.add_page(ui),
+                                Page::Environment => self.environment_page(ui),
+                                Page::Settings => self.settings_page(ui),
+                            },
+                        );
+                    });
+                });
+        });
+
+        self.manifest_dialog.update(ui.ctx());
+        if let Some(path) = self.manifest_dialog.take_picked() {
+            self.manifest = Some(path);
+            self.download = DepotPanel::default();
+            ui.ctx().request_repaint();
+        }
+        self.library_dialog.update(ui.ctx());
+        if let Some(path) = self.library_dialog.take_picked() {
+            self.library = Some(path);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
 #[derive(Default)]
-struct DepotPanel {
+pub(crate) struct DepotPanel {
     job: Option<depot::Job>,
     plan: Option<depot::Plan>,
     selected: usize,
@@ -359,6 +474,10 @@ struct DepotPanel {
 }
 
 impl DepotPanel {
+    pub(crate) fn busy(&self) -> bool {
+        self.job.is_some()
+    }
+
     fn start(&mut self, request: depot::Request) {
         self.result = None;
         self.last_progress = depot::Progress::default();
@@ -373,7 +492,7 @@ impl DepotPanel {
             return;
         };
         let Some(result) = job.try_finish() else {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            ctx.request_repaint_after(Duration::from_millis(100));
             return;
         };
         self.last_progress = job.progress();
@@ -399,7 +518,7 @@ impl DepotPanel {
         }
     }
 
-    fn show(
+    pub(crate) fn show(
         &mut self,
         ui: &mut egui::Ui,
         manifest: &Option<PathBuf>,
@@ -490,7 +609,7 @@ impl DepotPanel {
         Self::show_progress(ui, &self.last_progress);
     }
 
-    fn show_import(&mut self, ui: &mut egui::Ui, libraries: &[steam_library::Library]) {
+    pub(crate) fn show_import(&mut self, ui: &mut egui::Ui, libraries: &[steam_library::Library]) {
         let Some((id, source)) = &self.downloaded else {
             return;
         };
@@ -606,62 +725,5 @@ impl DepotPanel {
         if !progress.detail.is_empty() {
             ui.weak(&progress.detail);
         }
-    }
-}
-
-fn validate_app_id(input: &str) -> Result<u32, &'static str> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Err("");
-    }
-    if input.bytes().any(|byte| !byte.is_ascii_digit()) {
-        return Err("请输入有效的 Steam AppID（1–4294967295）。");
-    }
-    match input.parse::<u32>() {
-        Ok(value) if value > 0 => Ok(value),
-        _ => Err("请输入有效的 Steam AppID（1–4294967295）。"),
-    }
-}
-
-fn path_input(ui: &mut egui::Ui, label: &str, action: &str, value: &mut Option<PathBuf>) -> bool {
-    ui.label(label);
-    ui.horizontal(|ui| {
-        let browse = ui.button(action).clicked();
-        if value.is_some()
-            && ui
-                .button("清除")
-                .on_hover_text(format!("清除{label}"))
-                .clicked()
-        {
-            *value = None;
-        }
-        if let Some(path) = value {
-            let display_path = path.to_string_lossy();
-            ui.add(egui::Label::new(display_path.as_ref()).truncate())
-                .on_hover_text(display_path.as_ref());
-        } else {
-            ui.weak("尚未选择");
-        }
-        browse
-    })
-    .inner
-}
-
-#[cfg(test)]
-mod tests {
-    use super::validate_app_id;
-
-    #[test]
-    fn accepts_positive_steam_app_ids() {
-        assert_eq!(validate_app_id("440"), Ok(440));
-        assert_eq!(validate_app_id(" 4294967295 "), Ok(u32::MAX));
-    }
-
-    #[test]
-    fn rejects_empty_non_numeric_zero_and_overflow() {
-        assert!(validate_app_id("").is_err());
-        assert!(validate_app_id("abc").is_err());
-        assert!(validate_app_id("0").is_err());
-        assert!(validate_app_id("4294967296").is_err());
     }
 }
