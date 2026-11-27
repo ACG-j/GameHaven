@@ -10,6 +10,7 @@ use egui_mineral_material::{Material, MaterialUi, Rt};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
 mod depot;
+mod design;
 mod env_panel;
 mod fonts;
 mod pages;
@@ -17,7 +18,7 @@ mod sls;
 mod steam;
 mod steam_library;
 mod steam_store;
-mod ui;
+mod widgets;
 
 type LookupResult = Result<Option<steam_store::StoreApp>, String>;
 
@@ -36,6 +37,15 @@ impl Page {
             Self::Add => "添加游戏",
             Self::Environment => "环境",
             Self::Settings => "设置",
+        }
+    }
+
+    fn subtitle(self) -> &'static str {
+        match self {
+            Self::Library => "已发现的 Steam 库与安装记录",
+            Self::Add => "把 AppID 写进 SLSsteam，让 Steam 原生下载",
+            Self::Environment => "Steam、SLSsteam 与注入状态",
+            Self::Settings => "启动行为与路径",
         }
     }
 }
@@ -131,8 +141,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("io.github.ACG-j.GameHaven")
-            .with_inner_size([1040.0, 720.0])
-            .with_min_inner_size([880.0, 600.0]),
+            .with_inner_size([1200.0, 800.0])
+            .with_min_inner_size([design::WINDOW_MIN_WIDTH, design::WINDOW_MIN_HEIGHT]),
         ..Default::default()
     };
 
@@ -298,64 +308,70 @@ impl GameHaven {
     }
 
     fn sidebar(&mut self, ui: &mut MaterialUi<'_>) {
-        let weak = ui.visuals().weak_text_color();
-        ui.add_space(16.0);
-        ui.indent("sidebar-top", |ui| {
-            ui.label(RichText::new("游栖").size(19.0).strong());
+        let weak = design::on_surface_variant(ui);
+        ui.add_space(design::SPACE_5);
+        ui.indent("sidebar-brand", |ui| {
+            ui.label(RichText::new("游栖").size(design::TEXT_HEADLINE).strong());
             ui.label(
-                RichText::new("GameHaven").size(11.0).color(weak),
+                RichText::new("GameHaven")
+                    .size(design::TEXT_LABEL)
+                    .color(weak),
             );
         });
-        ui.add_space(20.0);
+        ui.add_space(design::SPACE_5);
 
-        for page in [
-            Page::Library,
-            Page::Add,
-            Page::Environment,
-            Page::Settings,
-        ] {
-            if ui::nav_item(ui, page.title(), self.page == page) {
+        for page in [Page::Library, Page::Add, Page::Environment, Page::Settings] {
+            if widgets::nav_item(ui, page.title(), self.page == page) {
                 self.page = page;
             }
-            ui.add_space(2.0);
+            ui.add_space(design::SPACE_1);
         }
 
         let remaining = ui.available_height();
-        if remaining > 96.0 {
-            ui.add_space(remaining - 92.0);
+        if remaining > 120.0 {
+            ui.add_space(remaining - 112.0);
         }
+        ui.add_space(design::SPACE_3);
         ui.separator();
-        ui.add_space(6.0);
-        ui.indent("sidebar-bottom", |ui| {
-            if let Some((ok, warn, error)) = self.env.summary() {
-                let summary = if error > 0 {
-                    format!("体检 {ok} 正常 · {error} 异常")
-                } else if warn > 0 {
-                    format!("体检 {ok} 正常 · {warn} 注意")
-                } else {
-                    format!("体检 {ok} 项全正常")
-                };
-                ui.label(RichText::new(summary).size(11.5).color(weak));
-            } else {
-                ui.label(RichText::new("正在检查…").size(11.5).color(weak));
+        ui.add_space(design::SPACE_3);
+        ui.indent("sidebar-status", |ui| {
+            let weak = design::on_surface_variant(ui);
+            let summary = self.env.summary();
+            match summary {
+                Some((ok, warn, error)) => {
+                    let text = if error > 0 {
+                        format!("体检 {ok} 正常 · {error} 异常")
+                    } else if warn > 0 {
+                        format!("体检 {ok} 正常 · {warn} 注意")
+                    } else {
+                        format!("体检 {ok} 项全正常")
+                    };
+                    ui.label(RichText::new(text).size(design::TEXT_LABEL).color(weak));
+                }
+                None => {
+                    ui.label(
+                        RichText::new("正在检查…")
+                            .size(design::TEXT_LABEL)
+                            .color(weak),
+                    );
+                }
             }
+            ui.add_space(design::SPACE_1);
             ui.horizontal(|ui| {
                 let running = self.env.steam_running();
-                ui::status_dot(
-                    ui,
-                    if running {
-                        ui::OK
-                    } else {
-                        ui.visuals().weak_text_color()
-                    },
-                );
+                let color = if running {
+                    design::OK
+                } else {
+                    weak
+                };
+                ui.label(RichText::new("●").size(design::TEXT_LABEL).color(color));
                 ui.label(
                     RichText::new(if running {
                         "Steam 运行中"
                     } else {
                         "Steam 未运行"
                     })
-                    .size(12.0),
+                    .size(design::TEXT_LABEL),
                 );
             });
         });
@@ -442,31 +458,61 @@ impl GameHaven {
         let height = ui.available_height();
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
             ui.allocate_ui_with_layout(
-                egui::vec2(ui::SIDEBAR_WIDTH, height),
+                egui::vec2(design::SIDEBAR_WIDTH, height),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| self.sidebar(ui),
             );
             ui.separator();
-            ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let mut mui = rt.ui(ui);
-                    mui.add_space(16.0);
-                    mui.horizontal_top(|ui| {
-                        ui.add_space(16.0);
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(780.0, ui.available_height()),
-                            egui::Layout::top_down(egui::Align::Min),
-                            |ui| match self.page {
-                                Page::Library => self.library_page(ui),
-                                Page::Add => self.add_page(ui),
-                                Page::Environment => self.environment_page(ui),
-                                Page::Settings => self.settings_page(ui),
-                            },
-                        );
+            let mut content = rt.ui(ui);
+            content.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.top_bar(ui);
+                ui.separator();
+                ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let mut mui = rt.ui(ui);
+                        mui.add_space(design::SPACE_5);
+                        let available = mui.available_width();
+                        let width = (available - design::SPACE_5 * 2.0)
+                            .min(design::CONTENT_MAX_WIDTH)
+                            .max(320.0);
+                        mui.horizontal_top(|ui| {
+                            ui.add_space(design::SPACE_5);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(width, ui.available_height()),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| match self.page {
+                                    Page::Library => self.library_page(ui),
+                                    Page::Add => self.add_page(ui),
+                                    Page::Environment => self.environment_page(ui),
+                                    Page::Settings => self.settings_page(ui),
+                                },
+                            );
+                        });
                     });
-                });
+            });
         });
+    }
+
+    fn top_bar(&mut self, ui: &mut MaterialUi<'_>) {
+        let variant = design::on_surface_variant(ui);
+        ui.add_space(design::SPACE_3);
+        ui.horizontal(|ui| {
+            ui.add_space(design::SPACE_5);
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(self.page.title())
+                        .size(design::TEXT_HEADLINE)
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new(self.page.subtitle())
+                        .size(design::TEXT_BODY)
+                        .color(variant),
+                );
+            });
+        });
+        ui.add_space(design::SPACE_3);
     }
 }
 

@@ -1,6 +1,6 @@
 # 游栖 · GameHaven
 
-Linux 原生的 Steam 工具箱。对标 OpenSteamTool 的功能集，但用 Rust、egui 和 Material Design 3 重做界面：不依赖 WebView，不需要 Python，也没有 .NET 运行时。
+Linux 原生的 Steam 工具箱。对标 OpenSteamTool 的功能集，用 Rust、egui 和 Material Design 3 重做界面：不依赖 WebView，不需要 Python，也没有 .NET 运行时。
 
 X11 与 Wayland 都可以运行。
 
@@ -11,18 +11,30 @@ X11 与 Wayland 都可以运行。
 - **可解释**：每个检查项和写操作都有明确说明；改 `config.yaml` 保留注释、自动备份、原子写入。
 - **不重造下载器**：解锁之后交给 Steam 客户端下载，CDN、校验、断点和 Proton 都由它处理。
 
+## 界面
+
+按 Material Design 3 的结构组织，而不是只套一层配色：
+
+- **NavigationDrawer**：左侧 240px，56dp 导航项，选中态是 pill。
+- **TopAppBar**：固定顶部，显示页面标题和一句说明；内容区最大 880px、24px 页边距，窗口缩小时自动收窄。
+- **设计 token**：间距只用 4dp 网格（`design::SPACE_*`），字号用 M3 type scale，颜色取 Material 主题的语义色。
+- **组件收口**：卡片、按钮（Filled / Tonal / Text）、开关、状态 chip 都走 `egui_mineral_material`，不再混用原生 egui 控件。
+- **破坏性操作有确认**：重启 Steam 需要二次确认，操作结果在对应卡片内反馈。
+
 ## 当前功能
 
 | 页面 | 能做什么 |
 | --- | --- |
-| 游戏库 | 发现原生 / Flatpak Steam 库，统计安装记录 |
-| 添加游戏 | 查询商店信息；把 AppID 写入 SLSsteam 的 `AdditionalApps`，可选写入后重启 Steam；解析本地清单并匿名下载单个 Depot |
-| 环境 | 8 项体检：Steam 安装、游戏库、SLSsteam 主库、兼容文件、配置文件、注入状态、启动入口、更新抑制；一键重启 Steam 并校验注入 |
-| 设置 | 自动重启开关、Steam / SLSsteam / 配置路径 |
+| 游戏库 | 发现原生 / Flatpak Steam 库，统计安装记录；没有库时给出空状态提示 |
+| 添加游戏 | 用 M3 输入框查询商店信息；把 AppID 写入 SLSsteam 的 `AdditionalApps`，可选写入后重启 Steam；解析本地清单并匿名下载单个 Depot |
+| 环境 | 体检汇总 chip + 检查项列表（正常项折叠）；一键重启 Steam 并校验注入 |
+| 设置 | 自动重启开关、Steam / SLSsteam / 配置路径、版本与许可证 |
 
 ![添加游戏](docs/screenshots/add.png)
 
 ![环境体检](docs/screenshots/environment.png)
+
+![游戏库](docs/screenshots/library.png)
 
 ## 构建
 
