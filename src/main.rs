@@ -13,6 +13,7 @@ mod depot;
 mod design;
 mod env_panel;
 mod fonts;
+mod journal;
 mod pages;
 mod sls;
 mod steam;
@@ -230,6 +231,8 @@ pub(crate) struct GameHaven {
     pub(crate) env: env_panel::EnvPanel,
     pub(crate) restart: RestartState,
     pub(crate) add_result: Option<Result<String, String>>,
+    pub(crate) remove_result: Option<Result<String, String>>,
+    pub(crate) account_result: Option<Result<String, String>>,
     pub(crate) auto_restart: bool,
 }
 
@@ -297,6 +300,8 @@ impl GameHaven {
             env: env_panel::EnvPanel::new(ctx),
             restart: RestartState::Idle,
             add_result: None,
+            remove_result: None,
+            account_result: None,
             auto_restart: true,
         })
     }
@@ -387,9 +392,53 @@ impl GameHaven {
                 dlcs.len()
             )
         };
+        journal::record(&format!(
+            "写入 AdditionalApps：{app_id}（DLC {} 个）",
+            dlcs.len()
+        ));
         self.add_result = Some(Ok(message));
         if self.auto_restart {
             self.start_restart(ctx);
+        }
+    }
+
+    pub(crate) fn remove_from_slssteam(&mut self, app_id: u32, ctx: &egui::Context) {
+        let Some(path) = steam::env::sls_config_path() else {
+            self.remove_result = Some(Err("没有找到 SLSsteam 的 config.yaml。".to_owned()));
+            return;
+        };
+        let config = sls::config::Config::new(path);
+        let mut errors = Vec::new();
+        if let Err(error) = config.remove_app(app_id) {
+            errors.push(error);
+        }
+        if let Err(error) = config.remove_dlc(app_id) {
+            errors.push(error);
+        }
+        if errors.is_empty() {
+            journal::record(&format!("移除注入 AppID {app_id}"));
+            self.remove_result = Some(Ok(format!(
+                "已从 SLSsteam 配置移除 {app_id}，重启 Steam 后生效。"
+            )));
+            self.env.refresh(ctx);
+        } else {
+            self.remove_result = Some(Err(errors.join(" ")));
+        }
+    }
+
+    pub(crate) fn switch_account(&mut self, account: String, _ctx: &egui::Context) {
+        let Some(root) = self.libraries.first().map(|library| library.path.clone()) else {
+            self.account_result = Some(Err("没有找到 Steam 库。".to_owned()));
+            return;
+        };
+        match steam::accounts::switch(&root, &account) {
+            Ok(()) => {
+                journal::record(&format!("切换自动登录账号为 {account}"));
+                self.account_result = Some(Ok(format!(
+                    "已切换到 {account}，重启 Steam 后生效。"
+                )));
+            }
+            Err(error) => self.account_result = Some(Err(error)),
         }
     }
 

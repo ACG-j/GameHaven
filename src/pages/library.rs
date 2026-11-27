@@ -4,6 +4,8 @@ use egui_mineral_material::prelude::{Card, CardVariant};
 
 use crate::GameHaven;
 use crate::design;
+use crate::sls;
+use crate::steam;
 use crate::steam_library;
 use crate::widgets;
 
@@ -25,16 +27,46 @@ impl GameHaven {
         }
         ui.add_space(design::SPACE_4);
 
-        if self.libraries.is_empty() {
+        // 注入集合每帧读一次：config.yaml 很小，不做额外缓存，点「刷新」后再读就是最新状态。
+        let injected: std::collections::HashSet<u32> = steam::env::sls_config_path()
+            .map(|path| sls::config::Config::new(path).apps().into_iter().collect())
+            .unwrap_or_default();
+
+        let ctx = ui.ctx().clone();
+        // 先克隆库列表：遍历时不借用 self，后面才能调用 &mut self 的移除方法。
+        let libraries = self.libraries.clone();
+        let mut remove: Option<u32> = None;
+        if libraries.is_empty() {
             widgets::empty_state(
                 ui,
                 "没有发现 Steam 库",
                 "请先启动 Steam 并完成初始化，再回到这里点「刷新」重新扫描。",
             );
         } else {
-            for library in &self.libraries {
-                library_card(ui, library);
+            for library in &libraries {
+                if let Some(app_id) = library_card(ui, library, &injected) {
+                    remove = Some(app_id);
+                }
                 ui.add_space(design::SPACE_3);
+            }
+        }
+
+        // 二次确认后才真正写配置；结果在同一帧就显示在列表下方。
+        if let Some(app_id) = remove {
+            self.remove_from_slssteam(app_id, &ctx);
+        }
+
+        // 移除结果放在列表之后、说明行之前，不遮挡游戏列表。
+        if let Some(result) = &self.remove_result {
+            match result {
+                Ok(message) => {
+                    ui.add_space(design::SPACE_2);
+                    ui.label(RichText::new(message.as_str()).size(design::TEXT_BODY));
+                }
+                Err(message) => {
+                    ui.add_space(design::SPACE_2);
+                    widgets::error_text(ui, message.as_str());
+                }
             }
         }
 
@@ -50,13 +82,20 @@ impl GameHaven {
 }
 
 /// 单个库的卡片：客户端类型、安装记录数、库路径与游戏列表。
-fn library_card(ui: &mut MaterialUi<'_>, library: &steam_library::Library) {
+///
+/// 返回值是用户在行内二次确认后要求移除的 AppID。
+fn library_card(
+    ui: &mut MaterialUi<'_>,
+    library: &steam_library::Library,
+    injected: &std::collections::HashSet<u32>,
+) -> Option<u32> {
     // 每次重建卡片都重读 appmanifest，点「刷新」后列表就是最新的。
     let apps = steam_library::installed_apps(library);
     let count = apps.len();
     let client = library.client.name();
     let path = library.path.display().to_string();
     let width = ui.available_width();
+    let mut remove = None;
 
     Card::new(format!("library-{path}"), format!("{client} · {path}"))
         .variant(CardVariant::Filled)
@@ -85,14 +124,24 @@ fn library_card(ui: &mut MaterialUi<'_>, library: &steam_library::Library) {
                     if index > 0 {
                         ui.add_space(design::SPACE_1);
                     }
-                    game_row(ui, app);
+                    if let Some(app_id) = game_row(ui, app, injected.contains(&app.app_id)) {
+                        remove = Some(app_id);
+                    }
                 }
             }
         });
+
+    remove
 }
 
-/// 单行游戏：左侧名称，右侧 AppID 与占用空间。
-fn game_row(ui: &mut MaterialUi<'_>, app: &steam_library::InstalledApp) {
+/// 单行游戏：左侧名称，右侧注入标记、移除操作、AppID 与占用空间。
+///
+/// 确认状态按行保存在 egui 内存里；返回值是二次确认后要求移除的 AppID。
+fn game_row(
+    ui: &mut MaterialUi<'_>,
+    app: &steam_library::InstalledApp,
+    injected: bool,
+) -> Option<u32> {
     let name = if app.name.is_empty() {
         format!("App {}", app.app_id)
     } else {
@@ -108,9 +157,31 @@ fn game_row(ui: &mut MaterialUi<'_>, app: &steam_library::InstalledApp) {
     } else {
         design::on_surface_variant(ui)
     };
+
+    // key 用当前 scope 拼上 AppID：每个库的卡片各有 scope，同一库内不同 AppID 也互不影响。
+    let confirm_id = ui.scope_id().with(("remove-confirm", app.app_id));
+    let ctx = ui.ctx().clone();
+    let mut confirm = ctx
+        .data(|data| data.get_temp::<bool>(confirm_id))
+        .unwrap_or(false);
+    // 已经不在注入集合里时，残留的确认状态直接丢掉。
+    if !injected {
+        confirm = false;
+    }
+    // 本帧开始时是否已处于确认状态：点「移除」的那一帧只置位，确认面板留到下一帧。
+    let show_confirm = confirm;
+
+    let mut remove = None;
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(meta).size(design::TEXT_LABEL).color(variant));
+            if injected {
+                // 点击「已注入」进入移除确认，避免另加按钮撑高列表行。
+                let color = design::primary(ui);
+                if widgets::action_chip(ui, "已注入", color) {
+                    confirm = true;
+                }
+            }
             // 名称占剩余宽度，过长时截断，悬停可看到完整名称。
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let label = egui::Label::new(RichText::new(name.as_str()).size(design::TEXT_BODY))
@@ -119,6 +190,36 @@ fn game_row(ui: &mut MaterialUi<'_>, app: &steam_library::InstalledApp) {
             });
         });
     });
+
+    // 二次确认：只有上一帧点过「移除」才展开，取消与确认都回到未确认状态。
+    if injected && show_confirm {
+        ui.add_space(design::SPACE_1);
+        ui.indent(format!("remove-confirm-panel-{}", app.app_id), |ui| {
+            ui.label(RichText::new("确认从 SLSsteam 配置移除？").size(design::TEXT_BODY));
+            ui.add_space(design::SPACE_2);
+            ui.horizontal(|ui| {
+                if widgets::filled_button(
+                    ui,
+                    &format!("remove-confirm-{}", app.app_id),
+                    "确认移除",
+                    true,
+                ) {
+                    confirm = false;
+                    remove = Some(app.app_id);
+                }
+                ui.add_space(design::SPACE_2);
+                if widgets::text_button(ui, &format!("remove-cancel-{}", app.app_id), "取消") {
+                    confirm = false;
+                }
+            });
+        });
+    }
+
+    ctx.data_mut(|data| {
+        *data.get_temp_mut_or_default::<bool>(confirm_id) = confirm;
+    });
+
+    remove
 }
 
 /// 把字节数格式化成 Steam 风格的 MB / GB。

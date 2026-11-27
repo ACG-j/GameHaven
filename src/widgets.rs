@@ -70,6 +70,27 @@ pub fn status_chip(ui: &mut MaterialUi<'_>, text: &str, color: Color32) {
     ui.painter().galley(position, galley, color);
 }
 
+/// 可点击的状态 chip，用于行内轻量操作（例如「已注入」→ 点击进入移除确认）。
+pub fn action_chip(ui: &mut MaterialUi<'_>, text: &str, color: Color32) -> bool {
+    let font = FontId::proportional(TEXT_LABEL);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font, color);
+    let padding = vec2(SPACE_2 + 2.0, 3.0);
+    let size = galley.size() + padding * 2.0;
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let background = if response.hovered() {
+        color.gamma_multiply(0.30)
+    } else {
+        color.gamma_multiply(0.18)
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(RADIUS_SM), background);
+    let position = rect.center() - galley.size() / 2.0;
+    ui.painter().galley(position, galley, color);
+    let clicked = response.clicked();
+    response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    clicked
+}
+
 /// M3 NavigationDrawer 项：56dp 高，选中为 pill。
 pub fn nav_item(ui: &mut MaterialUi<'_>, label: &str, selected: bool) -> bool {
     let tokens = ui.tokens();

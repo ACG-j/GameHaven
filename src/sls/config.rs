@@ -62,6 +62,67 @@ impl Config {
         })
     }
 
+    /// 读取 `AdditionalApps` 里的全部 AppID。
+    pub fn apps(&self) -> Vec<u32> {
+        let Ok((lines, _)) = self.read() else {
+            return Vec::new();
+        };
+        let Some(section) = find_section(&lines, "AdditionalApps") else {
+            return Vec::new();
+        };
+        (section.header + 1..section.end)
+            .filter_map(|index| {
+                lines[index]
+                    .trim()
+                    .strip_prefix('-')
+                    .and_then(|rest| rest.trim().split_whitespace().next())
+                    .and_then(|value| value.parse().ok())
+            })
+            .collect()
+    }
+
+    /// 读取某个父 AppID 在 `DlcData` 里登记的全部 DLC。
+    pub fn dlc_ids(&self, parent: u32) -> Vec<u32> {
+        let Ok((lines, _)) = self.read() else {
+            return Vec::new();
+        };
+        let Some(section) = find_section(&lines, "DlcData") else {
+            return Vec::new();
+        };
+        let parent_line = format!("  {parent}:");
+        let Some(start) = (section.header + 1..section.end)
+            .find(|index| lines[*index].trim_end() == parent_line)
+        else {
+            return Vec::new();
+        };
+        let end = child_block_end(&lines, start, section.end);
+        (start + 1..end)
+            .filter_map(|index| {
+                let trimmed = lines[index].trim_start();
+                let (key, _) = trimmed.split_once(':')?;
+                key.trim().parse().ok()
+            })
+            .collect()
+    }
+
+    /// 删除某个父 AppID 在 `DlcData` 里的整块。
+    pub fn remove_dlc(&self, parent: u32) -> Result<bool, String> {
+        self.edit(|lines| {
+            let Some(section) = find_section(lines, "DlcData") else {
+                return Ok(false);
+            };
+            let parent_line = format!("  {parent}:");
+            let Some(start) = (section.header + 1..section.end)
+                .find(|index| lines[*index].trim_end() == parent_line)
+            else {
+                return Ok(false);
+            };
+            let end = child_block_end(lines, start, section.end);
+            lines.drain(start..end);
+            Ok(true)
+        })
+    }
+
     pub fn has_app(&self, app_id: u32) -> bool {
         match self.read() {
             Ok((lines, _)) => find_section(&lines, "AdditionalApps")
@@ -345,6 +406,18 @@ ManifestIds:
         assert!(text.contains("  2483190: 111"));
         assert!(!config.add_token(1234, "other").unwrap());
         assert!(!config.set_manifest(2483190, 111).unwrap());
+    }
+
+    #[test]
+    fn reads_and_removes_dlc_block() {
+        let (directory, config) = config_with(SAMPLE);
+        assert_eq!(config.dlc_ids(2483190), vec![4439240]);
+        assert_eq!(config.apps(), vec![1493710, 228980]);
+        assert!(config.remove_dlc(2483190).unwrap());
+        let text = fs::read_to_string(directory.path().join("config.yaml")).unwrap();
+        assert!(!text.contains("4439240"));
+        assert!(text.contains("AppTokens:"));
+        assert!(!config.remove_dlc(2483190).unwrap());
     }
 
     #[test]
