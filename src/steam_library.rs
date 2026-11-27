@@ -135,6 +135,62 @@ pub fn app_record(library: &Library, app_id: u32) -> Option<(String, u32)> {
     valid_folder(folder).then(|| (folder.to_owned(), flags))
 }
 
+/// 一个已安装或部分安装的 Steam 应用（来自 appmanifest）。
+#[derive(Clone, Debug)]
+#[allow(dead_code)] // installdir / build_id 留给 ACF 修复与版本核对。
+pub struct InstalledApp {
+    pub app_id: u32,
+    pub name: String,
+    pub installdir: String,
+    pub size_on_disk: u64,
+    pub build_id: String,
+    pub state_flags: u32,
+}
+
+/// 读取一个库下所有 appmanifest；读不到的条目跳过。
+pub fn installed_apps(library: &Library) -> Vec<InstalledApp> {
+    let steamapps = library.path.join("steamapps");
+    let Ok(entries) = fs::read_dir(&steamapps) else {
+        return Vec::new();
+    };
+    let mut apps: Vec<InstalledApp> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            let app_id = name
+                .strip_prefix("appmanifest_")?
+                .strip_suffix(".acf")?
+                .parse::<u32>()
+                .ok()?;
+            let vdf = read_vdf(&entry.path(), "AppState")?;
+            let object = vdf.get_obj()?;
+            if field(object, "appid")?.parse::<u32>().ok()? != app_id {
+                return None;
+            }
+            Some(InstalledApp {
+                app_id,
+                name: field(object, "name").unwrap_or("").trim().to_owned(),
+                installdir: field(object, "installdir").unwrap_or("").to_owned(),
+                size_on_disk: field(object, "SizeOnDisk")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0),
+                build_id: field(object, "buildid").unwrap_or("").to_owned(),
+                state_flags: field(object, "StateFlags")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0),
+            })
+        })
+        .collect();
+    apps.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then(a.app_id.cmp(&b.app_id))
+    });
+    apps
+}
+
 pub fn valid_folder(folder: &str) -> bool {
     !folder.contains(['/', '\\'])
         && !folder.contains(char::is_control)
@@ -213,6 +269,37 @@ fn library_paths(value: &Value<'_>) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lists_installed_apps_from_manifests() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path();
+        let native = root.join(".local/share/Steam");
+        let steamapps = native.join("steamapps");
+        fs::create_dir_all(native.join("steamapps/common/A")).unwrap();
+        fs::write(
+            steamapps.join("appmanifest_10.acf"),
+            r#""AppState" { "appid" "10" "name" "Alpha" "installdir" "A" "SizeOnDisk" "1024" "buildid" "7" "StateFlags" "4" }"#,
+        )
+        .unwrap();
+        fs::write(
+            steamapps.join("appmanifest_20.acf"),
+            r#""AppState" { "appid" "20" "name" "Beta" "installdir" "B" "SizeOnDisk" "0" "buildid" "0" "StateFlags" "1026" }"#,
+        )
+        .unwrap();
+        fs::write(steamapps.join("appmanifest_bad.acf"), "not a manifest").unwrap();
+        let libraries = discover_at(root, &root.join(".local/share"));
+        let library = libraries
+            .iter()
+            .find(|library| library.client == Client::Native)
+            .unwrap();
+        let apps = installed_apps(library);
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].name, "Alpha");
+        assert_eq!(apps[0].size_on_disk, 1024);
+        assert_eq!(apps[1].app_id, 20);
+        assert_eq!(apps[1].state_flags, 1026);
+    }
 
     #[test]
     fn discovers_native_and_flatpak_and_reads_installed_app() {

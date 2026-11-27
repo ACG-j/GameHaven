@@ -25,8 +25,8 @@ X11 与 Wayland 都可以运行。
 
 | 页面 | 能做什么 |
 | --- | --- |
-| 游戏库 | 发现原生 / Flatpak Steam 库，统计安装记录；没有库时给出空状态提示 |
-| 添加游戏 | 用 M3 输入框查询商店信息；把 AppID 写入 SLSsteam 的 `AdditionalApps`，可选写入后重启 Steam；解析本地清单并匿名下载单个 Depot |
+| 游戏库 | 发现原生 / Flatpak Steam 库；列出 `appmanifest` 里的已安装游戏、占用空间和「未完成」标记 |
+| 添加游戏 | 按名称搜索商店，或用 AppID 查询；把游戏和商店列出的 DLC 一起写入 `AdditionalApps` / `DlcData`，可选写入后重启 Steam；解析本地清单并匿名下载单个 Depot |
 | 环境 | 体检汇总 chip + 检查项列表（正常项折叠）；一键重启 Steam 并校验注入 |
 | 设置 | 自动重启开关、Steam / SLSsteam / 配置路径、版本与许可证 |
 

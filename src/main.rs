@@ -69,6 +69,14 @@ impl StoreLookup {
         matches!(self, Self::Pending(..))
     }
 
+    /// 查询结果里的 DLC AppID；未查询或不匹配时为空。
+    pub(crate) fn dlcs(&self, app_id: u32) -> Vec<u32> {
+        match self {
+            Self::Finished(id, Ok(Some(app))) if *id == app_id => app.dlc.clone(),
+            _ => Vec::new(),
+        }
+    }
+
     pub(crate) fn start(&mut self, app_id: u32, ctx: &egui::Context) {
         let ctx = ctx.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
@@ -137,6 +145,54 @@ impl StoreLookup {
     }
 }
 
+#[derive(Default)]
+pub(crate) enum StoreSearch {
+    #[default]
+    Idle,
+    Pending(Receiver<Result<Vec<steam_store::SearchItem>, String>>),
+    Finished(Result<Vec<steam_store::SearchItem>, String>),
+}
+
+impl StoreSearch {
+    pub(crate) fn busy(&self) -> bool {
+        matches!(self, Self::Pending(_))
+    }
+
+    pub(crate) fn start(&mut self, term: String, ctx: &egui::Context) {
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        *self = match thread::Builder::new()
+            .name("steam-search".into())
+            .spawn(move || {
+                let _ = sender.send(steam_store::search(&term));
+                ctx.request_repaint();
+            }) {
+            Ok(_) => Self::Pending(receiver),
+            Err(_) => Self::Finished(Err("无法启动商店搜索，请重试。".to_owned())),
+        };
+    }
+
+    fn poll(&mut self) {
+        let Self::Pending(receiver) = self else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(result) => *self = Self::Finished(result),
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => {
+                *self = Self::Finished(Err("商店搜索意外结束。".to_owned()));
+            }
+        }
+    }
+
+    pub(crate) fn result(&self) -> Option<&Result<Vec<steam_store::SearchItem>, String>> {
+        match self {
+            Self::Finished(result) => Some(result),
+            _ => None,
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -160,7 +216,9 @@ pub(crate) struct GameHaven {
     pub(crate) rt: Arc<Rt>,
     pub(crate) page: Page,
     pub(crate) app_id: String,
+    pub(crate) search_term: String,
     pub(crate) store_lookup: StoreLookup,
+    pub(crate) search: StoreSearch,
     pub(crate) manifest: Option<PathBuf>,
     pub(crate) library: Option<PathBuf>,
     pub(crate) manifest_dialog: FileDialog,
@@ -225,7 +283,9 @@ impl GameHaven {
             rt,
             page: Page::Library,
             app_id: String::new(),
+            search_term: String::new(),
             store_lookup: StoreLookup::default(),
+            search: StoreSearch::default(),
             manifest: None,
             library: None,
             manifest_dialog: picker("manifest", labels.clone()),
@@ -243,6 +303,7 @@ impl GameHaven {
 
     fn poll_background(&mut self, ctx: &egui::Context) {
         self.store_lookup.poll();
+        self.search.poll();
         self.env.poll(ctx);
         self.poll_restart(ctx);
         self.download.poll(ctx, &mut self.app_id);
@@ -293,17 +354,42 @@ impl GameHaven {
             self.add_result = Some(Err("没有找到 SLSsteam 的 config.yaml。".to_owned()));
             return;
         };
-        match sls::config::Config::new(path).add_app(app_id) {
-            Ok(true) => {
-                self.add_result = Some(Ok(format!("已把 {app_id} 加入 AdditionalApps。")));
-                if self.auto_restart {
-                    self.start_restart(ctx);
-                }
+        let config = sls::config::Config::new(path);
+        let dlcs = self.store_lookup.dlcs(app_id);
+        let mut added = 0usize;
+        let mut errors = Vec::new();
+
+        match config.add_app(app_id) {
+            Ok(true) => added += 1,
+            Ok(false) => {}
+            Err(error) => errors.push(error),
+        }
+        for dlc in &dlcs {
+            match config.add_app(*dlc) {
+                Ok(true) => added += 1,
+                Ok(false) => {}
+                Err(error) => errors.push(error),
             }
-            Ok(false) => {
-                self.add_result = Some(Ok(format!("{app_id} 已经在 AdditionalApps 里。")));
+            if let Err(error) = config.add_dlc(app_id, *dlc, &format!("DLC {dlc}")) {
+                errors.push(error);
             }
-            Err(error) => self.add_result = Some(Err(error)),
+        }
+
+        if !errors.is_empty() {
+            self.add_result = Some(Err(errors.join(" ")));
+            return;
+        }
+        let message = if dlcs.is_empty() {
+            format!("已把 {app_id} 加入 AdditionalApps（新增 {added} 项）。")
+        } else {
+            format!(
+                "已把 {app_id} 与 {} 个 DLC 加入 AdditionalApps（新增 {added} 项）。",
+                dlcs.len()
+            )
+        };
+        self.add_result = Some(Ok(message));
+        if self.auto_restart {
+            self.start_restart(ctx);
         }
     }
 
