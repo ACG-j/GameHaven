@@ -1,4 +1,5 @@
 use eframe::egui::{self, RichText};
+use egui_mineral_material::MaterialUi;
 
 use crate::steam;
 use crate::ui;
@@ -6,7 +7,7 @@ use crate::GameHaven;
 use crate::RestartState;
 
 impl GameHaven {
-    pub(crate) fn environment_page(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn environment_page(&mut self, ui: &mut MaterialUi<'_>) {
         ui::page_header(ui, "环境", "Steam、SLSsteam 与注入状态");
 
         ui.horizontal(|ui| {
@@ -16,10 +17,8 @@ impl GameHaven {
                     ui.label(RichText::new(format!("{warn} 项注意")).color(ui::WARN));
                 }
                 if error > 0 {
-                    ui.label(
-                        RichText::new(format!("{error} 项异常"))
-                            .color(ui.visuals().error_fg_color),
-                    );
+                    let error_color = ui.visuals().error_fg_color;
+                    ui.label(RichText::new(format!("{error} 项异常")).color(error_color));
                 }
             } else {
                 ui.spinner();
@@ -55,7 +54,8 @@ impl GameHaven {
                 }
                 RestartState::Done(Err(message)) => {
                     ui.add_space(4.0);
-                    ui.colored_label(ui.visuals().error_fg_color, message);
+                    let error_color = ui.visuals().error_fg_color;
+                    ui.colored_label(error_color, message);
                 }
                 _ => {}
             }
@@ -76,7 +76,7 @@ impl GameHaven {
     }
 }
 
-fn path_line(ui: &mut egui::Ui, label: &str, path: &std::path::Path) {
+fn path_line(ui: &mut MaterialUi<'_>, label: &str, path: &std::path::Path) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).strong());
         ui.weak(path.display().to_string());

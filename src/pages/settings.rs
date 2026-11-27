@@ -1,11 +1,12 @@
-use eframe::egui::{self, RichText};
+use eframe::egui::RichText;
+use egui_mineral_material::MaterialUi;
 
 use crate::steam;
 use crate::ui;
 use crate::GameHaven;
 
 impl GameHaven {
-    pub(crate) fn settings_page(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_page(&mut self, ui: &mut MaterialUi<'_>) {
         ui::page_header(ui, "设置", "启动行为与路径信息");
 
         ui::section(ui, "启动行为", |ui| {
@@ -32,7 +33,7 @@ impl GameHaven {
     }
 }
 
-fn row(ui: &mut egui::Ui, label: &str, value: &str) {
+fn row(ui: &mut MaterialUi<'_>, label: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).strong());
         ui.weak(value);

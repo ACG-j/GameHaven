@@ -3,6 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText};
+use egui_mineral_material::MaterialUi;
 
 use crate::steam::env::{self, Check, Level, Report};
 
@@ -66,7 +67,7 @@ impl EnvPanel {
         }
     }
 
-    pub fn show_checks(&mut self, ui: &mut egui::Ui) {
+    pub fn show_checks(&mut self, ui: &mut MaterialUi<'_>) {
         let State::Ready(report) = &self.state else {
             return;
         };
@@ -84,15 +85,17 @@ fn level_color(level: Level, ui: &egui::Ui) -> egui::Color32 {
     }
 }
 
-fn show_check(ui: &mut egui::Ui, check: &Check) {
+fn show_check(ui: &mut MaterialUi<'_>, check: &Check) {
+    let weak = ui.visuals().weak_text_color();
     ui.horizontal(|ui| {
-        ui.colored_label(level_color(check.level, ui), "●");
+        let color = level_color(check.level, ui);
+        ui.colored_label(color, "●");
         ui.label(RichText::new(&check.title).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new(check.level.label())
                     .small()
-                    .color(ui.visuals().weak_text_color()),
+                    .color(weak),
             );
         });
     });
@@ -102,9 +105,7 @@ fn show_check(ui: &mut egui::Ui, check: &Check) {
             ui.label(RichText::new(&check.detail).small());
             if let Some(hint) = &check.hint {
                 ui.label(
-                    RichText::new(hint)
-                        .small()
-                        .color(ui.visuals().weak_text_color()),
+                    RichText::new(hint).small().color(weak),
                 );
             }
         });

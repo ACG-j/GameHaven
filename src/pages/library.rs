@@ -1,13 +1,14 @@
 use std::fs;
 
 use eframe::egui::{self, RichText};
+use egui_mineral_material::MaterialUi;
 
 use crate::steam_library;
 use crate::ui;
 use crate::GameHaven;
 
 impl GameHaven {
-    pub(crate) fn library_page(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn library_page(&mut self, ui: &mut MaterialUi<'_>) {
         ui::page_header(ui, "游戏库", "已发现的 Steam 库与磁盘上的安装记录");
 
         ui.horizontal(|ui| {

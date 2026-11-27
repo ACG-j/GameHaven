@@ -1,27 +1,57 @@
 # 游栖 · GameHaven
 
-面向 Linux 的 Steam 游戏库工具。可以按 AppID 查询游戏，预览本地 Steam 清单，匿名下载单个 Depot，并将已有文件交给 Steam 继续安装或校验。界面使用 Rust、egui 和 wgpu，支持 X11 和 Wayland。
+Linux 原生的 Steam 工具箱。对标 OpenSteamTool 的功能集，但用 Rust、egui 和 Material Design 3 重做界面：不依赖 WebView，不需要 Python，也没有 .NET 运行时。
 
-## 运行
+X11 与 Wayland 都可以运行。
 
-需要 Rust 1.95 或更新版本。中文界面优先使用系统安装的 Noto Sans CJK SC Regular。
+## 定位
+
+- **Linux 优先**：识别原生、Flatpak 和 Snap 的 Steam 安装与游戏库，直接管理 SLSsteam 注入。
+- **纯 Rust**：窗口、控件、渲染都在 Rust 里，只依赖系统图形栈。
+- **可解释**：每个检查项和写操作都有明确说明；改 `config.yaml` 保留注释、自动备份、原子写入。
+- **不重造下载器**：解锁之后交给 Steam 客户端下载，CDN、校验、断点和 Proton 都由它处理。
+
+## 当前功能
+
+| 页面 | 能做什么 |
+| --- | --- |
+| 游戏库 | 发现原生 / Flatpak Steam 库，统计安装记录 |
+| 添加游戏 | 查询商店信息；把 AppID 写入 SLSsteam 的 `AdditionalApps`，可选写入后重启 Steam；解析本地清单并匿名下载单个 Depot |
+| 环境 | 8 项体检：Steam 安装、游戏库、SLSsteam 主库、兼容文件、配置文件、注入状态、启动入口、更新抑制；一键重启 Steam 并校验注入 |
+| 设置 | 自动重启开关、Steam / SLSsteam / 配置路径 |
+
+![添加游戏](docs/screenshots/add.png)
+
+![环境体检](docs/screenshots/environment.png)
+
+## 构建
+
+需要 Rust 1.100 或更新版本（`egui_mineral_material` 的 MSRV）。
 
 ```bash
 cargo run --locked
 ```
 
-清单预览使用 `smd` 1.5.0，匿名下载使用 `DepotDownloader` 3.4.0。将两个可执行文件放入 `PATH`，也可以指定它们的绝对路径。下载程序会继承 `HTTP_PROXY` 和 `HTTPS_PROXY`。[smd 发布页](https://github.com/mcbabel/Steam-Manifest-Downloader/releases/tag/v1.5.0) · [DepotDownloader 发布页](https://github.com/SteamRE/DepotDownloader/releases/tag/DepotDownloader_3.4.0)
+运行环境：
 
-```bash
-GAMEHAVEN_SMD=/absolute/path/to/smd \
-GAMEHAVEN_DEPOT_DOWNLOADER=/absolute/path/to/DepotDownloader \
-cargo run --locked
-```
+- Steam 客户端（原生或 Flatpak）。首次使用前先启动并登录一次。
+- SLSsteam，用于解锁和注入。程序会检测安装位置、版本和 `LD_AUDIT` 是否生效。
+- 可选：`smd` 与 `DepotDownloader`，只在本地清单解析和匿名 Depot 下载时使用。可通过 `GAMEHAVEN_SMD`、`GAMEHAVEN_DEPOT_DOWNLOADER` 指定绝对路径。
 
-## 使用
+## 注入是怎么生效的
 
-- 在「Steam 游戏」中输入 AppID 可以查询商店信息，或打开 Steam 客户端发起安装。安装完成后，点「刷新 Steam 库」查看安装位置。
-- 选择 `.lua` 或 `.st` 清单并解析，选定 Depot 和目标目录后即可发起匿名下载。下载权限由 Steam 决定，已取回的文件保存在目标目录下的独立子目录中。
-- 下载完成后，在「复用已下载文件」中选择 Steam 库和游戏安装目录。已有安装记录时，GameHaven 会直接读取目录名。复制完成后，在 Steam 中选择同一库继续安装或校验，由 Steam 处理许可证和缺失文件。
+SLSsteam 通过 `LD_AUDIT` 在 Steam 启动时加载。程序不修改 Steam 二进制，只做三件事：
 
-[工具配置与验证记录](docs/linux-steam-library-plan.md)
+1. 检查 `~/.local/share/SLSsteam/SLSsteam.so` 是否存在且非空；
+2. 检查桌面图标和 `~/.local/bin/steam` 是否带注入；
+3. 需要时结束 Steam，再从带注入的入口重新启动，并在 `/proc/<pid>/maps` 里确认 `SLSsteam.so` 已加载。
+
+体检页会指出「装了但没注入」这类问题，而不是让游戏停在「库里看得见、下载走不通」的状态。
+
+## 路线
+
+下一阶段聚焦清单版本、DLC 批量登记和库页游戏卡。完整计划见 [docs/roadmap.md](docs/roadmap.md)。
+
+## 许可证
+
+GPL-3.0-or-later。界面组件使用 [egui_mineral_material](https://github.com/lajosbencz/egui_mineral)（GPL-3.0-or-later），因此本项目整体按 GPL-3.0 发布。

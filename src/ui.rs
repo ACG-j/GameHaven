@@ -1,6 +1,8 @@
 //! 界面骨架与共享组件：侧栏入口、页头、分组卡片和状态色。
 
-use eframe::egui::{self, Color32, Frame, RichText, Ui};
+use eframe::egui::{self, Color32, RichText};
+use egui_mineral_material::MaterialUi;
+use egui_mineral_material::prelude::{Card, CardVariant};
 
 pub const SIDEBAR_WIDTH: f32 = 184.0;
 
@@ -8,40 +10,40 @@ pub const OK: Color32 = Color32::from_rgb(0x3f, 0xa9, 0x5f);
 pub const WARN: Color32 = Color32::from_rgb(0xd9, 0x9a, 0x2b);
 
 /// 侧栏导航项，宽度占满侧栏。
-pub fn nav_item(ui: &mut Ui, label: &str, selected: bool) -> bool {
+pub fn nav_item(ui: &mut MaterialUi<'_>, label: &str, selected: bool) -> bool {
+    let width = ui.available_width();
     ui.add_sized(
-        [ui.available_width(), 32.0],
+        [width, 32.0],
         egui::Button::new(RichText::new(label).size(14.0)).selected(selected),
     )
     .clicked()
 }
 
 /// 页面标题区：大标题 + 一行说明 + 分隔线。
-pub fn page_header(ui: &mut Ui, title: &str, subtitle: &str) {
+pub fn page_header(ui: &mut MaterialUi<'_>, title: &str, subtitle: &str) {
+    let weak = ui.visuals().weak_text_color();
     ui.label(RichText::new(title).size(21.0).strong());
     ui.add_space(3.0);
-    ui.label(
-        RichText::new(subtitle)
-            .size(12.5)
-            .color(ui.visuals().weak_text_color()),
-    );
+    ui.label(RichText::new(subtitle).size(12.5).color(weak));
     ui.add_space(10.0);
     ui.separator();
     ui.add_space(12.0);
 }
 
 /// 一个带标题的分组卡片。
-pub fn section(ui: &mut Ui, title: &str, add: impl FnOnce(&mut Ui)) {
+pub fn section(ui: &mut MaterialUi<'_>, title: &str, add: impl FnOnce(&mut MaterialUi<'_>)) {
     ui.label(RichText::new(title).size(14.5).strong());
     ui.add_space(6.0);
-    Frame::group(ui.style()).inner_margin(14).show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        add(ui);
-    });
+    let width = ui.available_width();
+    Card::new(title.to_owned(), title.to_owned())
+        .variant(CardVariant::Filled)
+        .width(egui::Rangef::new(width, width))
+        .content_padding(Card::CONTENT_PADDING)
+        .show(ui, |ui| add(ui));
     ui.add_space(14.0);
 }
 
-pub fn status_dot(ui: &mut Ui, color: Color32) {
+pub fn status_dot(ui: &mut MaterialUi<'_>, color: Color32) {
     ui.label(RichText::new("●").color(color));
 }
 
@@ -60,7 +62,7 @@ pub fn validate_app_id(input: &str) -> Result<u32, &'static str> {
 }
 
 /// 路径选择行：按钮 + 当前值 + 清除。返回是否点击了选择按钮。
-pub fn path_input(ui: &mut Ui, label: &str, action: &str, value: &mut Option<std::path::PathBuf>) -> bool {
+pub fn path_input(ui: &mut MaterialUi<'_>, label: &str, action: &str, value: &mut Option<std::path::PathBuf>) -> bool {
     ui.label(label);
     ui.horizontal(|ui| {
         let browse = ui.button(action).clicked();

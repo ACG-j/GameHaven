@@ -1,9 +1,12 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText, ScrollArea, TextEdit};
+use egui_mineral_material::prelude::Runtime;
+use egui_mineral_material::{Material, MaterialUi, Rt};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
 mod depot;
@@ -137,13 +140,14 @@ fn main() -> eframe::Result {
         "游栖 · GameHaven",
         options,
         Box::new(|creation| {
-            fonts::configure(&creation.egui_ctx);
-            Ok(Box::new(GameHaven::new(&creation.egui_ctx)))
+            let app = GameHaven::new(&creation.egui_ctx)?;
+            Ok(Box::new(app))
         }),
     )
 }
 
 pub(crate) struct GameHaven {
+    pub(crate) rt: Arc<Rt>,
     pub(crate) page: Page,
     pub(crate) app_id: String,
     pub(crate) store_lookup: StoreLookup,
@@ -162,7 +166,12 @@ pub(crate) struct GameHaven {
 }
 
 impl GameHaven {
-    fn new(ctx: &egui::Context) -> Self {
+    fn new(
+        ctx: &egui::Context,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let rt = Runtime::new(ctx, Material::default())
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
+        fonts::configure(ctx);
         let labels = FileDialogLabels {
             title_select_file: "选择 Steam 清单".into(),
             title_select_directory: "选择目标库目录".into(),
@@ -202,7 +211,8 @@ impl GameHaven {
                 .show_new_folder_button(false)
         };
 
-        Self {
+        Ok(Self {
+            rt,
             page: Page::Library,
             app_id: String::new(),
             store_lookup: StoreLookup::default(),
@@ -218,7 +228,7 @@ impl GameHaven {
             restart: RestartState::Idle,
             add_result: None,
             auto_restart: true,
-        }
+        })
     }
 
     fn poll_background(&mut self, ctx: &egui::Context) {
@@ -287,14 +297,13 @@ impl GameHaven {
         }
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn sidebar(&mut self, ui: &mut MaterialUi<'_>) {
+        let weak = ui.visuals().weak_text_color();
         ui.add_space(16.0);
         ui.indent("sidebar-top", |ui| {
             ui.label(RichText::new("游栖").size(19.0).strong());
             ui.label(
-                RichText::new("GameHaven")
-                    .size(11.0)
-                    .color(ui.visuals().weak_text_color()),
+                RichText::new("GameHaven").size(11.0).color(weak),
             );
         });
         ui.add_space(20.0);
@@ -326,17 +335,9 @@ impl GameHaven {
                 } else {
                     format!("体检 {ok} 项全正常")
                 };
-                ui.label(
-                    RichText::new(summary)
-                        .size(11.5)
-                        .color(ui.visuals().weak_text_color()),
-                );
+                ui.label(RichText::new(summary).size(11.5).color(weak));
             } else {
-                ui.label(
-                    RichText::new("正在检查…")
-                        .size(11.5)
-                        .color(ui.visuals().weak_text_color()),
-                );
+                ui.label(RichText::new("正在检查…").size(11.5).color(weak));
             }
             ui.horizontal(|ui| {
                 let running = self.env.steam_running();
@@ -360,7 +361,7 @@ impl GameHaven {
         });
     }
 
-    pub(crate) fn show_steam_install(&mut self, ui: &mut egui::Ui, app_id: u32) {
+    pub(crate) fn show_steam_install(&mut self, ui: &mut MaterialUi<'_>, app_id: u32) {
         ui.add_space(14.0);
         ui.separator();
         ui.heading("Steam 客户端安装");
@@ -406,7 +407,8 @@ impl GameHaven {
                     ui.label("已发起安装请求。请在 Steam 中确认许可证和安装目录。");
                 }
                 Err(error) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    let error_color = ui.visuals().error_fg_color;
+                    ui.colored_label(error_color, error);
                 }
             }
         }
@@ -417,6 +419,26 @@ impl eframe::App for GameHaven {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_background(ui.ctx());
 
+        let rt = self.rt.clone();
+        rt.pass(ui, |ui| self.shell(ui));
+
+        self.manifest_dialog.update(ui.ctx());
+        if let Some(path) = self.manifest_dialog.take_picked() {
+            self.manifest = Some(path);
+            self.download = DepotPanel::default();
+            ui.ctx().request_repaint();
+        }
+        self.library_dialog.update(ui.ctx());
+        if let Some(path) = self.library_dialog.take_picked() {
+            self.library = Some(path);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+impl GameHaven {
+    fn shell(&mut self, ui: &mut MaterialUi<'_>) {
+        let rt = self.rt.clone();
         let height = ui.available_height();
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
             ui.allocate_ui_with_layout(
@@ -428,8 +450,9 @@ impl eframe::App for GameHaven {
             ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.add_space(16.0);
-                    ui.horizontal_top(|ui| {
+                    let mut mui = rt.ui(ui);
+                    mui.add_space(16.0);
+                    mui.horizontal_top(|ui| {
                         ui.add_space(16.0);
                         ui.allocate_ui_with_layout(
                             egui::vec2(780.0, ui.available_height()),
@@ -444,18 +467,6 @@ impl eframe::App for GameHaven {
                     });
                 });
         });
-
-        self.manifest_dialog.update(ui.ctx());
-        if let Some(path) = self.manifest_dialog.take_picked() {
-            self.manifest = Some(path);
-            self.download = DepotPanel::default();
-            ui.ctx().request_repaint();
-        }
-        self.library_dialog.update(ui.ctx());
-        if let Some(path) = self.library_dialog.take_picked() {
-            self.library = Some(path);
-            ui.ctx().request_repaint();
-        }
     }
 }
 
@@ -520,7 +531,7 @@ impl DepotPanel {
 
     pub(crate) fn show(
         &mut self,
-        ui: &mut egui::Ui,
+        ui: &mut MaterialUi<'_>,
         manifest: &Option<PathBuf>,
         library: &Option<PathBuf>,
         app_id: Option<u32>,
@@ -602,14 +613,15 @@ impl DepotPanel {
                 ui.label(*message);
             }
             Some(Err(message)) => {
-                ui.colored_label(ui.visuals().error_fg_color, message);
+                let error_color = ui.visuals().error_fg_color;
+                ui.colored_label(error_color, message);
             }
             None => {}
         }
         Self::show_progress(ui, &self.last_progress);
     }
 
-    pub(crate) fn show_import(&mut self, ui: &mut egui::Ui, libraries: &[steam_library::Library]) {
+    pub(crate) fn show_import(&mut self, ui: &mut MaterialUi<'_>, libraries: &[steam_library::Library]) {
         let Some((id, source)) = &self.downloaded else {
             return;
         };
@@ -637,7 +649,8 @@ impl DepotPanel {
                     ui.label("已向 Steam 发出请求。请在同一 Steam 库继续安装或校验。");
                 }
                 Some(Err(error)) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
+                    let error_color = ui.visuals().error_fg_color;
+                    ui.colored_label(error_color, error);
                 }
                 None => {}
             }
