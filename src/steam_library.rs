@@ -33,6 +33,10 @@ impl Client {
         self.open("validate", app_id)
     }
 
+    pub fn run(self, app_id: u32) -> Result<(), String> {
+        self.open("rungameid", app_id)
+    }
+
     fn open(self, action: &str, app_id: u32) -> Result<(), String> {
         let mut command = match self {
             Self::Native => Command::new("steam"),

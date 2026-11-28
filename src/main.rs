@@ -9,6 +9,7 @@ use egui_mineral_material::prelude::Runtime;
 use egui_mineral_material::{Material, MaterialUi, Rt};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
+mod covers;
 mod depot;
 mod design;
 mod env_panel;
@@ -239,11 +240,13 @@ pub(crate) struct GameHaven {
     pub(crate) libraries: Vec<steam_library::Library>,
     pub(crate) installed: Option<(u32, Option<PathBuf>)>,
     pub(crate) install_request: Option<(u32, Result<(), String>)>,
+    pub(crate) covers: covers::Covers,
     pub(crate) env: env_panel::EnvPanel,
     pub(crate) restart: RestartState,
     pub(crate) add_result: Option<Result<String, String>>,
     pub(crate) remove_result: Option<Result<String, String>>,
     pub(crate) account_result: Option<Result<String, String>>,
+    pub(crate) launch_result: Option<Result<String, String>>,
     pub(crate) auto_restart: bool,
 }
 
@@ -311,11 +314,13 @@ impl GameHaven {
             libraries: steam_library::discover(),
             installed: None,
             install_request: None,
+            covers: covers::Covers::default(),
             env: env_panel::EnvPanel::new(ctx),
             restart: RestartState::Idle,
             add_result: None,
             remove_result: None,
             account_result: None,
+            launch_result: None,
             auto_restart: true,
         })
     }
@@ -323,6 +328,7 @@ impl GameHaven {
     fn poll_background(&mut self, ctx: &egui::Context) {
         self.store_lookup.poll();
         self.search.poll();
+        self.covers.poll(ctx);
         self.env.poll(ctx);
         self.poll_restart(ctx);
         self.download.poll(ctx, &mut self.app_id);
@@ -438,6 +444,15 @@ impl GameHaven {
         } else {
             self.remove_result = Some(Err(errors.join(" ")));
         }
+    }
+
+    pub(crate) fn launch_game(&mut self, library: &steam_library::Library, app_id: u32) {
+        self.launch_result = Some(
+            library
+                .client
+                .run(app_id)
+                .map(|()| format!("已请求启动 {app_id}。")),
+        );
     }
 
     pub(crate) fn switch_account(&mut self, account: String, _ctx: &egui::Context) {

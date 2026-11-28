@@ -111,6 +111,7 @@ impl Check {
 #[allow(dead_code)] // 原始数据留给后续「修复」流程，面板目前只渲染 checks。
 pub struct Report {
     pub roots: Vec<SteamRoot>,
+    pub depotcache: usize,
     pub libraries: Vec<steam_library::Library>,
     pub processes: Vec<ProcessInfo>,
     pub sls: SlsStatus,
@@ -149,14 +150,24 @@ pub fn collect() -> Report {
     let libraries = steam_library::discover();
     let processes = find_steam_processes();
     let sls = find_sls(&roots);
+    let depotcache = count_depotcache(&roots);
     let steam_cfg = find_steam_cfg(&roots);
     let launcher = find_launcher();
-    let checks = build_checks(&roots, &libraries, &processes, &sls, steam_cfg.as_ref(), &launcher);
+    let checks = build_checks(
+        &roots,
+        &libraries,
+        &processes,
+        &sls,
+        depotcache,
+        steam_cfg.as_ref(),
+        &launcher,
+    );
     Report {
         roots,
         libraries,
         processes,
         sls,
+        depotcache,
         steam_cfg,
         launcher,
         checks,
@@ -470,11 +481,33 @@ fn library_list(libraries: &[steam_library::Library]) -> String {
     parts.join("；")
 }
 
+fn count_depotcache(roots: &[SteamRoot]) -> usize {
+    roots
+        .iter()
+        .map(|root| {
+            fs::read_dir(root.path.join("depotcache"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| {
+                            entry
+                                .file_name()
+                                .to_string_lossy()
+                                .ends_with(".manifest")
+                        })
+                        .count()
+                })
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
 fn build_checks(
     roots: &[SteamRoot],
     libraries: &[steam_library::Library],
     processes: &[ProcessInfo],
     sls: &SlsStatus,
+    depotcache: usize,
     steam_cfg: Option<&(PathBuf, bool)>,
     launcher: &Launcher,
 ) -> Vec<Check> {
@@ -621,6 +654,18 @@ fn build_checks(
         checks.push(
             Check::warn("启动入口", "桌面图标和终端启动都没有配置 LD_AUDIT。")
                 .with_hint("给启动入口加注入，否则 Steam 不会加载 SLSsteam。"),
+        );
+    }
+
+    if depotcache > 0 {
+        checks.push(Check::ok(
+            "本地 manifest",
+            format!("depotcache 里有 {depotcache} 个 manifest。"),
+        ));
+    } else {
+        checks.push(
+            Check::warn("本地 manifest", "depotcache 是空的。")
+                .with_hint("Steam 会从 CDN 拉取最新版；需要锁定版本时，在添加页导入 .manifest。"),
         );
     }
 

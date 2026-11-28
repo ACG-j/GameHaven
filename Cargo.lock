@@ -1486,6 +1486,7 @@ dependencies = [
  "egui-file-dialog",
  "egui_mineral_material",
  "fontique",
+ "image",
  "keyvalues-parser",
  "rustix 1.1.6",
  "serde",
@@ -2076,6 +2077,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
