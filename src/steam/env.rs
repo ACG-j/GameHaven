@@ -150,6 +150,7 @@ pub fn collect() -> Report {
     let libraries = steam_library::discover();
     let processes = find_steam_processes();
     let sls = find_sls(&roots);
+    let sls_load_error = find_sls_load_error(&roots);
     let depotcache = count_depotcache(&roots);
     let steam_cfg = find_steam_cfg(&roots);
     let launcher = find_launcher();
@@ -158,6 +159,7 @@ pub fn collect() -> Report {
         &libraries,
         &processes,
         &sls,
+        sls_load_error.as_deref(),
         depotcache,
         steam_cfg.as_ref(),
         &launcher,
@@ -404,6 +406,24 @@ fn find_sls(roots: &[SteamRoot]) -> SlsStatus {
     status
 }
 
+fn find_sls_load_error(roots: &[SteamRoot]) -> Option<String> {
+    let text = fs::read_to_string(roots.first()?.path.join("logs/console-linux.txt")).ok()?;
+    sls_load_error(&text)
+}
+
+/// 只看最近一次 Steam 启动之后的日志，避免历史错误一直报。
+pub(crate) fn sls_load_error(text: &str) -> Option<String> {
+    let start = text
+        .rfind("steam.sh[")
+        .or_else(|| text.rfind("Startup - Steam Client launched"))?;
+    let tail = &text[start..];
+    if tail.contains("CURL_OPENSSL_4") && tail.contains("SLSsteam") {
+        Some("SLSsteam 未能加载：Steam Runtime 的 libcurl 缺少 CURL_OPENSSL_4。".to_owned())
+    } else {
+        None
+    }
+}
+
 fn find_steam_cfg(roots: &[SteamRoot]) -> Option<(PathBuf, bool)> {
     roots.iter().find_map(|root| {
         let path = root.path.join("steam.cfg");
@@ -507,6 +527,7 @@ fn build_checks(
     libraries: &[steam_library::Library],
     processes: &[ProcessInfo],
     sls: &SlsStatus,
+    sls_load_error: Option<&str>,
     depotcache: usize,
     steam_cfg: Option<&(PathBuf, bool)>,
     launcher: &Launcher,
@@ -597,6 +618,19 @@ fn build_checks(
             Check::warn("SLSsteam 配置", "没有找到 config.yaml。")
                 .with_hint("启动一次 Steam，让 SLSsteam 生成默认配置。"),
         ),
+    }
+
+    match sls_load_error {
+        Some(message) => checks.push(
+            Check::error("SLSsteam 加载", message).with_hint(
+                "把 ~/.local/share/Steam/ubuntu12_32/steam-runtime/pinned_libs_64/libcurl.so.4 \
+                 指向系统 /usr/lib/libcurl.so.4，然后重启 Steam。",
+            ),
+        ),
+        None => checks.push(Check::ok(
+            "SLSsteam 加载",
+            "最近一次 Steam 启动没有 SLSsteam 加载错误。",
+        )),
     }
 
     if processes.is_empty() {
@@ -704,6 +738,14 @@ mod tests {
     fn ignores_inline_empty_additional_apps() {
         let yaml = "AdditionalApps:\nAppIds:\n  - 440\n";
         assert_eq!(count_additional_apps(yaml), 0);
+    }
+
+    #[test]
+    fn finds_sls_load_error_only_in_latest_start() {
+        let old = "steam.sh[1]: boot\nERROR: CURL_OPENSSL_4 not found (required by SLSsteam.so)";
+        assert!(sls_load_error(old).is_some());
+        let recovered = "steam.sh[1]: boot\nERROR: CURL_OPENSSL_4 not found\nsteam.sh[2]: boot\nLog already open";
+        assert!(sls_load_error(recovered).is_none());
     }
 
     #[test]
