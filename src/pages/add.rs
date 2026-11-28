@@ -1,15 +1,13 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use eframe::egui::{self, RichText};
-use egui_mineral_material::MaterialUi;
+use eframe::egui::{Align, Layout, vec2};
 use egui_mineral_material::prelude::{Select, SelectOption, TextField, TextFieldVariant};
+use egui_mineral_material::{MaterialUi, icons};
 
 use crate::DepotPanel;
 use crate::GameHaven;
 use crate::design::validate_app_id;
-use crate::design::{
-    OK, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_LABEL, on_surface_variant,
-};
+use crate::design::{OK, SPACE_1, SPACE_2, SPACE_3, SPACE_4};
 use crate::sls;
 use crate::steam;
 use crate::widgets;
@@ -20,24 +18,24 @@ const SEARCH_RESULT_LIMIT: usize = 8;
 impl GameHaven {
     pub(crate) fn add_page(&mut self, ui: &mut MaterialUi<'_>) {
         // 第一步：按名称搜索或直接输入 AppID，再按需查询 Steam 商店。
-        widgets::section(ui, "1 · 选择游戏", |ui| {
-            // 搜索行：按钮和回车都能发起商店搜索，查询期间禁用按钮。
+        widgets::section_step(ui, 1, "选择游戏", |ui| {
+            // 搜索行：输入井占满剩余宽度，按钮与回车都能发起商店搜索。
             let search_busy = self.search.busy();
             let mut submit = false;
             ui.horizontal(|ui| {
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.search_term)
-                        .hint_text("按名称搜索游戏")
-                        .desired_width(240.0),
-                );
-                // 单行输入框按回车会交出焦点，据此判定提交。
-                if response.lost_focus()
-                    && ui.ctx().input(|input| input.key_pressed(egui::Key::Enter))
-                {
-                    submit = true;
-                }
+                let field_width = (ui.available_width() - 108.0).max(160.0);
+                ui.allocate_ui_with_layout(vec2(field_width, 56.0), Layout::top_down(Align::Min), |ui| {
+                    let field = ui.mineral(
+                        TextField::new("add-search", "按名称搜索游戏", &mut self.search_term)
+                            .placeholder("例如 空洞骑士")
+                            .variant(TextFieldVariant::Outlined),
+                    );
+                    if field.output().submitted {
+                        submit = true;
+                    }
+                });
                 ui.add_space(SPACE_2);
-                if widgets::tonal_button(ui, "add-search", "搜索", !search_busy) {
+                if widgets::tonal_button_icon(ui, "add-search-btn", "搜索", icons::ICON_SEARCH, !search_busy) {
                     submit = true;
                 }
                 if search_busy {
@@ -59,7 +57,7 @@ impl GameHaven {
                         found
                             .iter()
                             .take(SEARCH_RESULT_LIMIT)
-                            .map(|item| (item.id, format!("{} · {}", &item.name, item.id)))
+                            .map(|item| (item.id, item.name.clone()))
                             .collect(),
                     );
                 }
@@ -76,8 +74,8 @@ impl GameHaven {
                 if found.is_empty() {
                     widgets::caption(ui, "没有匹配的游戏");
                 } else {
-                    for (id, label) in found {
-                        if widgets::text_button(ui, &format!("add-search-{id}"), label) {
+                    for (id, name) in found {
+                        if widgets::list_row(ui, &format!("add-search-{id}"), name, &format!("#{id}")) {
                             picked = Some(*id);
                         }
                     }
@@ -90,30 +88,39 @@ impl GameHaven {
             }
 
             ui.add_space(SPACE_3);
-            let field = ui.mineral(
-                TextField::new("add-app-id", "Steam AppID", &mut self.app_id)
-                    .placeholder("例如 440")
-                    .variant(TextFieldVariant::Outlined),
+            let mut submitted = false;
+            ui.allocate_ui_with_layout(vec2(280.0, 76.0), Layout::top_down(Align::Min), |ui| {
+                let field = ui.mineral(
+                    TextField::new("add-app-id", "Steam AppID", &mut self.app_id)
+                        .placeholder("例如 440")
+                        .variant(TextFieldVariant::Outlined),
+                );
+                submitted = field.output().submitted;
+            });
+            widgets::caption(
+                ui,
+                "Steam 商店页网址里的数字，例如 store.steampowered.com/app/440。",
             );
-            let submitted = field.output().submitted;
 
-            // 输入过但无效时显示内联错误；其余情况显示一句帮助文字。
+            // 输入过但无效时显示内联错误；帮助文字已由输入井的 supporting 承担。
             let validation = validate_app_id(&self.app_id);
             let valid = validation.ok();
-            match validation {
-                Err(message) if !self.app_id.trim().is_empty() && !message.is_empty() => {
-                    widgets::error_text(ui, message);
-                }
-                _ => widgets::caption(
-                    ui,
-                    "Steam 商店页网址里的数字，例如 store.steampowered.com/app/440。",
-                ),
+            if let Err(message) = validation
+                && !self.app_id.trim().is_empty()
+                && !message.is_empty()
+            {
+                widgets::error_text(ui, message);
             }
 
             ui.add_space(SPACE_3);
             let busy = self.store_lookup.busy();
-            let clicked =
-                widgets::filled_button(ui, "lookup-store", "查询商店", valid.is_some() && !busy);
+            let clicked = widgets::filled_button_icon(
+                ui,
+                "lookup-store",
+                "查询商店",
+                icons::ICON_SEARCH,
+                valid.is_some() && !busy,
+            );
             // 按钮和回车都能发起查询；AppID 无效时两者都不可用。
             if (clicked || submitted)
                 && !busy
@@ -140,7 +147,7 @@ impl GameHaven {
         let app_id = validate_app_id(&self.app_id).ok();
 
         // 第二步：把 AppID 写进 SLSsteam，可选择写入后自动重启 Steam。
-        widgets::section(ui, "2 · 写入 SLSsteam", |ui| {
+        widgets::section_step(ui, 2, "写入 SLSsteam", |ui| {
             match steam::env::sls_config_path() {
                 Some(path) => {
                     widgets::key_value(ui, "配置文件", &path.display().to_string());
@@ -149,10 +156,11 @@ impl GameHaven {
                     // 一键添加：查 appinfo、写入游戏与 DLC，再尝试从公开镜像拉 manifest；
                     // 跑完由 main.rs 按 auto_restart 决定是否重启 Steam。
                     ui.horizontal(|ui| {
-                        if widgets::filled_button(
+                        if widgets::filled_button_icon(
                             ui,
                             "add-oneclick",
                             "一键添加",
+                            icons::ICON_BOLT,
                             app_id.is_some() && self.add_game.is_none(),
                         ) && let Some(id) = app_id
                         {
@@ -161,11 +169,9 @@ impl GameHaven {
                         if self.add_game.is_some() {
                             ui.add_space(SPACE_2);
                             ui.spinner();
+                            widgets::caption(ui, "正在查询 appinfo、写入配置并拉取 manifest…");
                         }
                     });
-                    if self.add_game.is_some() {
-                        widgets::caption(ui, "正在查询 appinfo、写入配置并拉取 manifest…");
-                    }
                     ui.add_space(SPACE_1);
                     widgets::caption(
                         ui,
@@ -173,14 +179,13 @@ impl GameHaven {
                     );
                     ui.add_space(SPACE_4);
 
-                    widgets::switch(
+                    widgets::switch_row(
                         ui,
                         "auto-restart",
                         "写入后自动重启 Steam",
+                        "写入成功后结束并重新启动 Steam，让 SLSsteam 立即生效。",
                         &mut self.auto_restart,
                     );
-                    ui.add_space(SPACE_1);
-                    widgets::caption(ui, "写入成功后结束并重新启动 Steam，让 SLSsteam 立即生效。");
                     ui.add_space(SPACE_4);
                     // 写入动作会把商店列出的 DLC 一起带上，先在按钮前说明。
                     widgets::caption(
@@ -188,17 +193,24 @@ impl GameHaven {
                         "会同时把商店列出的 DLC 写进 AdditionalApps 和 DlcData。",
                     );
                     ui.add_space(SPACE_2);
-                    if widgets::filled_button(ui, "sls-add-app", "加入游戏与 DLC", app_id.is_some())
-                        && let Some(id) = app_id
-                    {
-                        self.add_to_slssteam(id, ui.ctx());
-                    }
-                    if let Some(id) = app_id
-                        && sls::config::Config::new(&path).has_app(id)
-                    {
-                        ui.add_space(SPACE_2);
-                        widgets::status_chip(ui, &format!("{id} 已在 AdditionalApps 里"), OK);
-                    }
+                    ui.horizontal(|ui| {
+                        if widgets::tonal_button_icon(
+                            ui,
+                            "sls-add-app",
+                            "加入游戏与 DLC",
+                            icons::ICON_ADD_CIRCLE,
+                            app_id.is_some(),
+                        ) && let Some(id) = app_id
+                        {
+                            self.add_to_slssteam(id, ui.ctx());
+                        }
+                        if let Some(id) = app_id
+                            && sls::config::Config::new(&path).has_app(id)
+                        {
+                            ui.add_space(SPACE_2);
+                            widgets::status_chip(ui, &format!("{id} 已在 AdditionalApps 里"), OK);
+                        }
+                    });
                 }
                 None => {
                     widgets::error_text(ui, "没有找到 SLSsteam 的 config.yaml。");
@@ -207,63 +219,64 @@ impl GameHaven {
                 }
             }
             // 上一次写入的结果。
-            match &self.add_result {
-                Some(Ok(message)) => {
-                    ui.add_space(SPACE_3);
-                    ui.label(RichText::new(message.as_str()).size(TEXT_BODY).color(OK));
-                }
-                Some(Err(message)) => {
-                    ui.add_space(SPACE_3);
-                    widgets::error_text(ui, message);
-                }
-                None => {}
+            if let Some(result) = &self.add_result {
+                widgets::result_banner(ui, result);
             }
         });
 
         // 第三步：本地清单与 Depot 下载，是可选的补充路径。
-        widgets::section(ui, "3 · 本地清单与 Depot 下载", |ui| {
+        widgets::section_step(ui, 3, "本地清单与 Depot 下载", |ui| {
             let busy = self.download.busy();
 
-            widgets::caption(ui, "本地清单");
-            ui.add_space(SPACE_1);
-            ui.horizontal(|ui| {
-                if widgets::tonal_button(ui, "pick-manifest", "选择文件…", !busy) {
-                    self.manifest_dialog.pick_file();
-                }
-                if self.manifest.is_some()
-                    && !busy
-                    && widgets::text_button(ui, "clear-manifest", "清除")
-                {
-                    // 换掉清单后，之前解析出的 Depot 结果不再适用。
-                    self.manifest = None;
-                    self.download = DepotPanel::default();
-                }
+            let manifest_hint = match &self.manifest {
+                Some(path) => path.display().to_string(),
+                None => "尚未选择；只用 SLSsteam 也可以跳过这一步。".to_owned(),
+            };
+            widgets::control_row(ui, "本地清单", Some(&manifest_hint), |ui| {
+                    ui.horizontal(|ui| {
+                        if widgets::tonal_button_icon(
+                            ui,
+                            "pick-manifest",
+                            "选择文件…",
+                            icons::ICON_UPLOAD_FILE,
+                            !busy,
+                        ) {
+                            self.manifest_dialog.pick_file();
+                        }
+                        if self.manifest.is_some()
+                            && !busy
+                            && widgets::text_button(ui, "clear-manifest", "清除")
+                        {
+                            // 换掉清单后，之前解析出的 Depot 结果不再适用。
+                            self.manifest = None;
+                            self.download = DepotPanel::default();
+                        }
+                    });
             });
-            ui.add_space(SPACE_1);
-            match &self.manifest {
-                Some(path) => path_label(ui, path),
-                None => widgets::caption(ui, "尚未选择；只用 SLSsteam 也可以跳过这一步。"),
-            }
-
-            ui.add_space(SPACE_4);
-            widgets::caption(ui, "目标库");
-            ui.add_space(SPACE_1);
-            ui.horizontal(|ui| {
-                if widgets::tonal_button(ui, "pick-library", "选择目录…", !busy) {
-                    self.library_dialog.pick_directory();
-                }
-                if self.library.is_some()
-                    && !busy
-                    && widgets::text_button(ui, "clear-library", "清除")
-                {
-                    self.library = None;
-                }
+            ui.add_space(SPACE_3);
+            let library_hint = match &self.library {
+                Some(path) => path.display().to_string(),
+                None => "尚未选择；Depot 下载需要目标库目录。".to_owned(),
+            };
+            widgets::control_row(ui, "目标库", Some(&library_hint), |ui| {
+                    ui.horizontal(|ui| {
+                        if widgets::tonal_button_icon(
+                            ui,
+                            "pick-library",
+                            "选择目录…",
+                            icons::ICON_FOLDER_OPEN,
+                            !busy,
+                        ) {
+                            self.library_dialog.pick_directory();
+                        }
+                        if self.library.is_some()
+                            && !busy
+                            && widgets::text_button(ui, "clear-library", "清除")
+                        {
+                            self.library = None;
+                        }
+                    });
             });
-            ui.add_space(SPACE_1);
-            match &self.library {
-                Some(path) => path_label(ui, path),
-                None => widgets::caption(ui, "尚未选择；Depot 下载需要目标库目录。"),
-            }
 
             if !self.libraries.is_empty() {
                 ui.add_space(SPACE_3);
@@ -280,10 +293,17 @@ impl GameHaven {
                         )),
                     )
                 });
-                let select = ui.mineral(
-                    Select::optional("known-libraries", "已发现的 Steam 库", &mut picked)
-                        .items(options),
-                );
+                let select = ui.allocate_ui_with_layout(
+                    vec2(ui.available_width(), 56.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.mineral(
+                            Select::optional("known-libraries", "已发现的 Steam 库", &mut picked)
+                                .items(options),
+                        )
+                    },
+                )
+                .inner;
                 if select.changed() && picked != current {
                     self.library = picked.map(PathBuf::from);
                 }
@@ -296,7 +316,7 @@ impl GameHaven {
         });
 
         // 第四步：用户自备的 manifest，用来把 depot 锁在固定版本上。
-        widgets::section(ui, "4 · 本地 manifest 与版本", |ui| {
+        widgets::section_step(ui, 4, "本地 manifest 与版本", |ui| {
             widgets::caption(
                 ui,
                 "文件名必须是 <depot>_<manifest>.manifest。导入后会写入 Steam 的 depotcache、写 SLSsteam 的 ManifestIds，并按当前 AppID 生成 ACF。",
@@ -304,14 +324,19 @@ impl GameHaven {
 
             // 文件选择行：左边挑文件，右边显示当前路径（超宽截断）。
             ui.add_space(SPACE_3);
-            ui.horizontal(|ui| {
-                if widgets::tonal_button(ui, "add-depot-manifest", "选择 .manifest", true) {
+            let manifest_state = match &self.depot_manifest {
+                Some(path) => path.display().to_string(),
+                None => "尚未选择".to_owned(),
+            };
+            widgets::control_row(ui, "版本清单", Some(&manifest_state), |ui| {
+                if widgets::tonal_button_icon(
+                    ui,
+                    "add-depot-manifest",
+                    "选择 .manifest",
+                    icons::ICON_UPLOAD_FILE,
+                    true,
+                ) {
                     self.depot_manifest_dialog.pick_file();
-                }
-                ui.add_space(SPACE_2);
-                match &self.depot_manifest {
-                    Some(path) => path_caption(ui, path),
-                    None => widgets::caption(ui, "尚未选择"),
                 }
             });
 
@@ -320,20 +345,29 @@ impl GameHaven {
             ui.add_space(SPACE_3);
             let download_busy = self.manifest_download.is_some();
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.depot_input)
-                        .hint_text("Depot ID")
-                        .desired_width(140.0),
-                );
+                ui.allocate_ui_with_layout(vec2(140.0, 56.0), Layout::top_down(Align::Min), |ui| {
+                    ui.mineral(
+                        TextField::new("depot-id", "Depot ID", &mut self.depot_input)
+                            .placeholder("例如 4401")
+                            .variant(TextFieldVariant::Outlined),
+                    );
+                });
                 ui.add_space(SPACE_2);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.manifest_input)
-                        .hint_text("Manifest ID")
-                        .desired_width(180.0),
-                );
+                ui.allocate_ui_with_layout(vec2(180.0, 56.0), Layout::top_down(Align::Min), |ui| {
+                    ui.mineral(
+                        TextField::new("manifest-id", "Manifest ID", &mut self.manifest_input)
+                            .placeholder("例如 8744596894457938025")
+                            .variant(TextFieldVariant::Outlined),
+                    );
+                });
                 ui.add_space(SPACE_2);
-                if widgets::tonal_button(ui, "add-download-manifest", "从仓库下载", !download_busy)
-                {
+                if widgets::tonal_button_icon(
+                    ui,
+                    "add-download-manifest",
+                    "从仓库下载",
+                    icons::ICON_DOWNLOAD,
+                    !download_busy,
+                ) {
                     self.start_manifest_download(ui.ctx());
                 }
                 if download_busy {
@@ -366,21 +400,19 @@ impl GameHaven {
             // 解析成功才能导入：导入会落盘、写 ManifestIds 并生成 ACF。
             ui.add_space(SPACE_3);
             let ready = parsed.is_some();
-            if widgets::filled_button(ui, "add-import-manifest", "导入并锁定", ready) {
+            if widgets::filled_button_icon(
+                ui,
+                "add-import-manifest",
+                "导入并锁定",
+                icons::ICON_KEY,
+                ready,
+            ) {
                 self.import_depot_manifest(ui.ctx());
             }
 
             // 上一次导入的结果。
-            match &self.depot_manifest_result {
-                Some(Ok(message)) => {
-                    ui.add_space(SPACE_3);
-                    ui.label(RichText::new(message.as_str()).size(TEXT_BODY).color(OK));
-                }
-                Some(Err(message)) => {
-                    ui.add_space(SPACE_3);
-                    widgets::error_text(ui, message);
-                }
-                None => {}
+            if let Some(result) = &self.depot_manifest_result {
+                widgets::result_banner(ui, result);
             }
         });
 
@@ -389,21 +421,4 @@ impl GameHaven {
             self.show_steam_install(ui, id);
         }
     }
-}
-
-/// 路径标签：超宽时截断，悬停显示完整路径。
-fn path_label(ui: &mut MaterialUi<'_>, path: &Path) {
-    let text = path.display().to_string();
-    let response = ui.add(egui::Label::new(RichText::new(text.clone()).size(TEXT_BODY)).truncate());
-    response.on_hover_text(text);
-}
-
-/// 弱化的路径文字：caption 字号，超宽截断，悬停显示完整路径。
-fn path_caption(ui: &mut MaterialUi<'_>, path: &Path) {
-    let text = path.display().to_string();
-    let color = on_surface_variant(ui);
-    let response = ui.add(
-        egui::Label::new(RichText::new(text.clone()).size(TEXT_LABEL).color(color)).truncate(),
-    );
-    response.on_hover_text(text);
 }

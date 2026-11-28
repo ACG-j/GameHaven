@@ -5,7 +5,7 @@ use std::time::Duration;
 use eframe::egui::{self, RichText};
 use egui_mineral_material::MaterialUi;
 
-use crate::design::{self, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY, TEXT_LABEL};
+use crate::design::{self, SPACE_1, SPACE_2, SPACE_3, TEXT_BODY};
 use crate::steam::env::{self, Check, Level, Report};
 use crate::widgets;
 
@@ -77,7 +77,7 @@ impl EnvPanel {
         };
 
         if report.checks.is_empty() {
-            widgets::empty_state(ui, "没有检查结果", "点「重新检查」重新读取 Steam 环境。");
+            widgets::empty_state(ui, egui_mineral_material::icons::ICON_MONITOR_HEART, "没有检查结果", "点「重新检查」重新读取 Steam 环境。");
             return;
         }
 
@@ -110,18 +110,42 @@ fn level_color(level: Level, ui: &MaterialUi<'_>) -> egui::Color32 {
     }
 }
 
-/// 注意 / 异常项：色点 + 标题 + 等级 pill + 详情 + 建议，直接展开。
+/// 注意 / 异常项：语义色条卡片，标题 + 等级 pill + 详情 + 建议，直接展开。
 fn show_attention(ui: &mut MaterialUi<'_>, check: &Check) {
     let color = level_color(check.level, ui);
     let variant = design::on_surface_variant(ui);
-    ui.horizontal_top(|ui| {
-        ui.label(RichText::new("●").size(TEXT_LABEL).color(color));
-        ui.add_space(SPACE_2);
-        ui.vertical(|ui| {
+    let surface = design::on_surface(ui);
+    let icon = if check.level == Level::Error {
+        egui_mineral_material::icons::ICON_ERROR
+    } else {
+        egui_mineral_material::icons::ICON_WARNING_AMBER
+    };
+    let rt = ui.rt();
+    let response = egui::Frame::new()
+        .fill(design::tint(color, 0.10))
+        .corner_radius(egui::CornerRadius::same(design::RADIUS_MD))
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(&check.title).size(TEXT_BODY).strong());
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                widgets::paint_icon(
+                    ui,
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    icon,
+                    18.0,
+                    color,
+                    true,
+                );
                 ui.add_space(SPACE_2);
-                widgets::status_chip(ui, check.level.label(), color);
+                ui.label(RichText::new(&check.title).size(TEXT_BODY).strong().color(surface));
+                ui.with_layout(
+                    eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
+                    |ui| {
+                        let mut mui = rt.ui(ui);
+                        widgets::status_chip(&mut mui, check.level.label(), color);
+                    },
+                );
             });
             ui.add_space(SPACE_1);
             ui.label(RichText::new(&check.detail).size(TEXT_BODY).color(variant));
@@ -129,12 +153,26 @@ fn show_attention(ui: &mut MaterialUi<'_>, check: &Check) {
                 ui.add_space(SPACE_1);
                 ui.label(
                     RichText::new(format!("建议 · {hint}"))
-                        .size(TEXT_LABEL)
+                        .size(design::TEXT_LABEL)
                         .color(variant),
                 );
             }
-        });
-    });
+        })
+        .response;
+    let bar = egui::Rect::from_min_max(
+        response.rect.left_top(),
+        egui::pos2(response.rect.left() + 3.0, response.rect.bottom()),
+    );
+    ui.painter().rect_filled(
+        bar,
+        egui::CornerRadius {
+            nw: design::RADIUS_MD,
+            sw: design::RADIUS_MD,
+            ne: 0,
+            se: 0,
+        },
+        color,
+    );
 }
 
 /// 正常项折叠区：标题只写数量，默认收起以减少页面噪音。
@@ -159,19 +197,28 @@ fn show_ok_group(ui: &mut MaterialUi<'_>, checks: &[&Check]) {
         });
 }
 
-/// 正常项：标题 + 详情 + 提示，不再重复标注「正常」。
+/// 正常项：绿色对勾 + 标题 + 详情 + 提示，不再重复标注「正常」。
 fn show_quiet(ui: &mut MaterialUi<'_>, check: &Check) {
     let variant = design::on_surface_variant(ui);
     ui.horizontal_top(|ui| {
-        ui.label(RichText::new("●").size(TEXT_LABEL).color(design::OK));
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+        widgets::paint_icon(
+            ui,
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_mineral_material::icons::ICON_CHECK_CIRCLE,
+            16.0,
+            design::OK,
+            true,
+        );
         ui.add_space(SPACE_2);
         ui.vertical(|ui| {
             ui.label(RichText::new(&check.title).size(TEXT_BODY));
             ui.add_space(SPACE_1);
-            ui.label(RichText::new(&check.detail).size(TEXT_LABEL).color(variant));
+            ui.label(RichText::new(&check.detail).size(design::TEXT_LABEL).color(variant));
             if let Some(hint) = &check.hint {
                 ui.add_space(SPACE_1);
-                ui.label(RichText::new(hint).size(TEXT_LABEL).color(variant));
+                ui.label(RichText::new(hint).size(design::TEXT_LABEL).color(variant));
             }
         });
     });

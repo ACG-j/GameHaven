@@ -1,7 +1,7 @@
 //! 「环境」页：体检汇总、检查项、重启维护与路径。
 
-use eframe::egui::{self, RichText};
-use egui_mineral_material::MaterialUi;
+use eframe::egui::{self, Align, Layout, RichText};
+use egui_mineral_material::{MaterialUi, icons};
 
 use crate::GameHaven;
 use crate::RestartState;
@@ -28,7 +28,7 @@ impl GameHaven {
         self.environment_paths(ui);
     }
 
-    /// 顶部体检汇总：三个状态 pill，旁边是重新检查。
+    /// 顶部体检汇总：三个状态 pill 靠左，重新检查靠右。
     fn environment_summary(&mut self, ui: &mut MaterialUi<'_>) {
         let summary = self.env.summary();
         ui.horizontal(|ui| {
@@ -41,17 +41,23 @@ impl GameHaven {
                 widgets::status_chip(ui, &format!("{warn} 项注意"), warn_color);
                 ui.add_space(SPACE_2);
                 widgets::status_chip(ui, &format!("{error} 项异常"), error_color);
-                ui.add_space(SPACE_3);
             } else {
                 ui.spinner();
                 ui.add_space(SPACE_2);
                 widgets::caption(ui, "正在检查…");
-                ui.add_space(SPACE_3);
             }
-            // 检查未返回时禁用，避免重复启动后台线程。
-            if widgets::tonal_button(ui, "env-refresh", "重新检查", summary.is_some()) {
-                self.env.refresh(ui.ctx());
-            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // 检查未返回时禁用，避免重复启动后台线程。
+                if widgets::tonal_button_icon(
+                    ui,
+                    "env-refresh",
+                    "重新检查",
+                    icons::ICON_REFRESH,
+                    summary.is_some(),
+                ) {
+                    self.env.refresh(ui.ctx());
+                }
+            });
         });
     }
 
@@ -65,7 +71,7 @@ impl GameHaven {
             .data(|data| data.get_temp::<bool>(confirm_id))
             .unwrap_or(false);
 
-        widgets::section(ui, "维护", |ui| {
+        widgets::section(ui, icons::ICON_BUILD_CIRCLE, "维护", |ui| {
             if busy {
                 confirm = false;
                 ui.horizontal(|ui| {
@@ -90,9 +96,17 @@ impl GameHaven {
                     }
                 });
             } else {
-                if widgets::tonal_button(ui, "env-restart", "重启 Steam", true) {
-                    confirm = true;
-                }
+                ui.horizontal(|ui| {
+                    if widgets::tonal_button_icon(
+                        ui,
+                        "env-restart",
+                        "重启 Steam",
+                        icons::ICON_REFRESH,
+                        true,
+                    ) {
+                        confirm = true;
+                    }
+                });
                 ui.add_space(SPACE_2);
                 widgets::caption(
                     ui,
@@ -100,20 +114,8 @@ impl GameHaven {
                 );
 
                 // 上一次重启的结果，确认阶段先让位给确认文案。
-                match &self.restart {
-                    RestartState::Done(Ok(message)) => {
-                        ui.add_space(SPACE_3);
-                        ui.label(
-                            RichText::new(message.as_str())
-                                .size(TEXT_BODY)
-                                .color(design::OK),
-                        );
-                    }
-                    RestartState::Done(Err(message)) => {
-                        ui.add_space(SPACE_3);
-                        widgets::error_text(ui, message.as_str());
-                    }
-                    _ => {}
+                if let RestartState::Done(result) = &self.restart {
+                    widgets::result_banner(ui, result);
                 }
             }
         });
@@ -136,7 +138,7 @@ impl GameHaven {
             rows.push(("配置", path.display().to_string()));
         }
 
-        widgets::section(ui, "路径", |ui| {
+        widgets::section(ui, icons::ICON_FOLDER_OPEN, "路径", |ui| {
             if rows.is_empty() {
                 widgets::caption(ui, "尚未发现 Steam 或 SLSsteam 的路径。");
                 return;

@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use eframe::egui::{self, RichText, ScrollArea, TextEdit};
-use egui_mineral_material::prelude::Runtime;
+use egui_mineral_material::prelude::{MaterialExt, Runtime};
 use egui_mineral_material::{Material, MaterialUi, Rt};
 use egui_file_dialog::{FileDialog, FileDialogLabels};
 
@@ -27,7 +27,7 @@ mod widgets;
 
 use jobs::{RepairJob, RestartState, StoreLookup, StoreSearch, run_add_game};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub(crate) enum Page {
     Library,
     Add,
@@ -51,6 +51,16 @@ impl Page {
             Self::Add => "把 AppID 写进 SLSsteam，让 Steam 原生下载",
             Self::Environment => "Steam、SLSsteam 与注入状态",
             Self::Settings => "启动行为与路径",
+        }
+    }
+
+    fn icon(self) -> egui_mineral_material::MaterialIcon {
+        use egui_mineral_material::icons;
+        match self {
+            Self::Library => icons::ICON_GRID_VIEW,
+            Self::Add => icons::ICON_ADD_CIRCLE,
+            Self::Environment => icons::ICON_MONITOR_HEART,
+            Self::Settings => icons::ICON_SETTINGS,
         }
     }
 }
@@ -135,7 +145,9 @@ impl GameHaven {
     fn new(
         ctx: &egui::Context,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let rt = Runtime::new(ctx, Material::default())
+        let material = Material::default();
+        design::install_theme(ctx, &material);
+        let rt = Runtime::new(ctx, material)
             .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { Box::new(error) })?;
         fonts::configure(ctx);
         let labels = FileDialogLabels {
@@ -675,126 +687,180 @@ impl GameHaven {
     }
 
     fn sidebar(&mut self, ui: &mut MaterialUi<'_>) {
-        let weak = design::on_surface_variant(ui);
+        let tokens = ui.tokens();
+        let weak = tokens.color.on_surface_variant;
+        let surface = tokens.color.on_surface;
+        // 侧栏整块比内容区暗一档，形成第一层深度。
+        let panel = ui.max_rect();
+        ui.painter()
+            .rect_filled(panel, 0.0, tokens.color.surface_container_low);
+
         ui.add_space(design::SPACE_5);
-        ui.indent("sidebar-brand", |ui| {
-            ui.label(RichText::new("游栖").size(design::TEXT_HEADLINE).strong());
-            ui.label(
-                RichText::new("GameHaven")
-                    .size(design::TEXT_LABEL)
-                    .color(weak),
+        ui.horizontal(|ui| {
+            ui.add_space(design::SPACE_3);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(38.0, 38.0), egui::Sense::hover());
+            widgets::gradient_rect(
+                ui,
+                rect,
+                12,
+                tokens.color.primary,
+                tokens.color.secondary_container,
             );
+            widgets::paint_icon(
+                ui,
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                egui_mineral_material::icons::ICON_SPORTS_ESPORTS,
+                22.0,
+                tokens.color.on_primary,
+                true,
+            );
+            ui.add_space(design::SPACE_3);
+            ui.vertical(|ui| {
+                ui.label(RichText::new("游栖").size(18.0).strong());
+                ui.label(
+                    RichText::new("G A M E H A V E N")
+                        .size(9.0)
+                        .color(weak),
+                );
+            });
         });
         ui.add_space(design::SPACE_5);
 
         for page in [Page::Library, Page::Add, Page::Environment, Page::Settings] {
-            if widgets::nav_item(ui, page.title(), self.page == page) {
-                self.page = page;
-            }
+            ui.horizontal(|ui| {
+                ui.add_space(design::SPACE_3);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(design::SIDEBAR_WIDTH - design::SPACE_5, design::NAV_ITEM_HEIGHT),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        if widgets::nav_item(ui, page.icon(), page.title(), self.page == page) {
+                            self.page = page;
+                        }
+                    },
+                );
+            });
             ui.add_space(design::SPACE_1);
         }
 
         let remaining = ui.available_height();
         if remaining > 120.0 {
-            ui.add_space(remaining - 112.0);
+            ui.add_space(remaining - 108.0);
         }
-        ui.add_space(design::SPACE_3);
-        ui.separator();
-        ui.add_space(design::SPACE_3);
-        ui.indent("sidebar-status", |ui| {
-            let weak = design::on_surface_variant(ui);
-            let summary = self.env.summary();
-            match summary {
-                Some((ok, warn, error)) => {
-                    let text = if error > 0 {
-                        format!("体检 {ok} 正常 · {error} 异常")
-                    } else if warn > 0 {
-                        format!("体检 {ok} 正常 · {warn} 注意")
-                    } else {
-                        format!("体检 {ok} 项全正常")
-                    };
-                    ui.label(RichText::new(text).size(design::TEXT_LABEL).color(weak));
-                }
-                None => {
-                    ui.label(
-                        RichText::new("正在检查…")
-                            .size(design::TEXT_LABEL)
-                            .color(weak),
+        // 底部状态卡：体检汇总 + Steam 进程状态。
+        ui.horizontal(|ui| {
+            ui.add_space(design::SPACE_3);
+            ui.allocate_ui_with_layout(
+                egui::vec2(design::SIDEBAR_WIDTH - design::SPACE_5, 76.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    let card = ui.max_rect();
+                    ui.painter().rect_filled(
+                        card,
+                        design::RADIUS_MD,
+                        design::tint(surface, 0.04),
                     );
-                }
-            }
-            ui.add_space(design::SPACE_1);
-            ui.horizontal(|ui| {
-                let running = self.env.steam_running();
-                let color = if running {
-                    design::OK
-                } else {
-                    weak
-                };
-                ui.label(RichText::new("●").size(design::TEXT_LABEL).color(color));
-                ui.label(
-                    RichText::new(if running {
-                        "Steam 运行中"
-                    } else {
-                        "Steam 未运行"
-                    })
-                    .size(design::TEXT_LABEL),
-                );
-            });
+                    let inner = card.shrink2(egui::vec2(design::SPACE_3, design::SPACE_3));
+                    ui.scope_builder(
+                        egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)),
+                        |ui| {
+                        ui.set_min_size(inner.size());
+                        let summary = self.env.summary();
+                        let (text, color) = match summary {
+                            Some((ok, _, error)) if error > 0 => (
+                                format!("体检 {ok} 正常 · {error} 异常"),
+                                tokens.color.error,
+                            ),
+                            Some((ok, warn, _)) if warn > 0 => (
+                                format!("体检 {ok} 正常 · {warn} 注意"),
+                                design::WARN,
+                            ),
+                            Some((ok, _, _)) => (format!("体检 {ok} 项全正常"), design::OK),
+                            None => ("正在检查…".to_owned(), weak),
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("●").size(9.0).color(color));
+                            ui.label(RichText::new(text).size(design::TEXT_LABEL).color(weak));
+                        });
+                        ui.add_space(design::SPACE_2);
+                        let running = self.env.steam_running();
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("●")
+                                    .size(9.0)
+                                    .color(if running { design::OK } else { weak }),
+                            );
+                            ui.label(
+                                RichText::new(if running {
+                                    "Steam 运行中"
+                                } else {
+                                    "Steam 未运行"
+                                })
+                                .size(design::TEXT_LABEL)
+                                .color(weak),
+                            );
+                        });
+                    });
+                },
+            );
         });
+        ui.add_space(design::SPACE_3);
     }
 
     pub(crate) fn show_steam_install(&mut self, ui: &mut MaterialUi<'_>, app_id: u32) {
-        ui.add_space(14.0);
-        ui.separator();
-        ui.heading("Steam 客户端安装");
-        if self
-            .installed
-            .as_ref()
-            .is_none_or(|(id, _)| *id != app_id)
-        {
-            let path = self
-                .libraries
-                .iter()
-                .find_map(|library| steam_library::installed_location(library, app_id));
-            self.installed = Some((app_id, path));
-        }
-        if let Some((_, Some(path))) = &self.installed {
-            ui.label(format!("已安装 · {}", path.display()));
-            return;
-        }
-        let mut has_client = false;
-        for client in [
-            steam_library::Client::Native,
-            steam_library::Client::Flatpak,
-        ] {
+        use egui_mineral_material::icons;
+        widgets::section(ui, icons::ICON_DESKTOP_WINDOWS, "Steam 客户端安装", |ui| {
             if self
-                .libraries
-                .iter()
-                .any(|library| library.client == client)
+                .installed
+                .as_ref()
+                .is_none_or(|(id, _)| *id != app_id)
             {
-                has_client = true;
-                if ui.button(format!("在 {} 中安装", client.name())).clicked() {
-                    self.install_request = Some((app_id, client.install(app_id)));
-                }
+                let path = self
+                    .libraries
+                    .iter()
+                    .find_map(|library| steam_library::installed_location(library, app_id));
+                self.installed = Some((app_id, path));
             }
-        }
-        if !has_client {
-            ui.weak("没有发现 Steam 库。请先启动 Steam 并完成初始化。");
-        }
-        if let Some((id, result)) = &self.install_request
-            && *id == app_id
-        {
-            match result {
-                Ok(()) => {
-                    ui.label("已发起安装请求。请在 Steam 中确认许可证和安装目录。");
-                }
-                Err(error) => {
-                    let error_color = ui.visuals().error_fg_color;
-                    ui.colored_label(error_color, error);
-                }
+            if let Some((_, Some(path))) = &self.installed {
+                widgets::key_value(ui, "已安装", &path.display().to_string());
+                return;
             }
-        }
+            let mut has_client = false;
+            ui.horizontal(|ui| {
+                for client in [
+                    steam_library::Client::Native,
+                    steam_library::Client::Flatpak,
+                ] {
+                    if self
+                        .libraries
+                        .iter()
+                        .any(|library| library.client == client)
+                    {
+                        has_client = true;
+                        if widgets::tonal_button(
+                            ui,
+                            &format!("install-{}", client.name()),
+                            &format!("在 {} 中安装", client.name()),
+                            true,
+                        ) {
+                            self.install_request = Some((app_id, client.install(app_id)));
+                        }
+                        ui.add_space(design::SPACE_2);
+                    }
+                }
+            });
+            if !has_client {
+                widgets::caption(ui, "没有发现 Steam 库。请先启动 Steam 并完成初始化。");
+            }
+            if let Some((id, result)) = &self.install_request
+                && *id == app_id
+            {
+                let banner = result.as_ref().map(|()| {
+                    "已发起安装请求。请在 Steam 中确认许可证和安装目录。".to_owned()
+                }).map_err(|error| error.clone());
+                widgets::result_banner(ui, &banner);
+            }
+        });
     }
 }
 
@@ -835,6 +901,7 @@ impl eframe::App for GameHaven {
 
 impl GameHaven {
     fn shell(&mut self, ui: &mut MaterialUi<'_>) {
+        design::tune_visuals(ui);
         let rt = self.rt.clone();
         let height = ui.available_height();
         ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
@@ -847,18 +914,19 @@ impl GameHaven {
             let mut content = rt.ui(ui);
             content.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 self.top_bar(ui);
-                ui.separator();
                 ScrollArea::vertical()
+                    .id_salt(self.page)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         let mut mui = rt.ui(ui);
                         mui.add_space(design::SPACE_5);
                         let available = mui.available_width();
                         let width = (available - design::SPACE_5 * 2.0)
-                            .min(design::CONTENT_MAX_WIDTH)
-                            .max(320.0);
+                            .clamp(320.0, design::CONTENT_MAX_WIDTH);
+                        // 宽窗口下内容居中，两侧留白对称。
+                        let margin = ((available - width) / 2.0).max(design::SPACE_5);
                         mui.horizontal_top(|ui| {
-                            ui.add_space(design::SPACE_5);
+                            ui.add_space(margin);
                             ui.allocate_ui_with_layout(
                                 egui::vec2(width, ui.available_height()),
                                 egui::Layout::top_down(egui::Align::Min),
@@ -870,16 +938,32 @@ impl GameHaven {
                                 },
                             );
                         });
+                        mui.add_space(design::SPACE_3);
                     });
             });
         });
     }
 
     fn top_bar(&mut self, ui: &mut MaterialUi<'_>) {
-        let variant = design::on_surface_variant(ui);
-        ui.add_space(design::SPACE_3);
+        let tokens = ui.tokens();
+        let variant = tokens.color.on_surface_variant;
+        let accent = tokens.color.primary;
+        ui.add_space(design::SPACE_4);
         ui.horizontal(|ui| {
             ui.add_space(design::SPACE_5);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, design::RADIUS_SM, design::tint(accent, 0.15));
+            widgets::paint_icon(
+                ui,
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                self.page.icon(),
+                20.0,
+                accent,
+                true,
+            );
+            ui.add_space(design::SPACE_3);
             ui.vertical(|ui| {
                 ui.label(
                     RichText::new(self.page.title())
@@ -888,12 +972,18 @@ impl GameHaven {
                 );
                 ui.label(
                     RichText::new(self.page.subtitle())
-                        .size(design::TEXT_BODY)
+                        .size(design::TEXT_LABEL)
                         .color(variant),
                 );
             });
         });
-        ui.add_space(design::SPACE_3);
+        ui.add_space(design::SPACE_4);
+        let y = ui.cursor().top();
+        let left = ui.cursor().left();
+        ui.painter().line_segment(
+            [egui::pos2(left, y), egui::pos2(left + ui.available_width(), y)],
+            egui::Stroke::new(1.0, tokens.color.outline_variant),
+        );
     }
 }
 
@@ -966,7 +1056,7 @@ impl DepotPanel {
         let Some(manifest) = manifest else {
             return;
         };
-        ui.add_space(12.0);
+        ui.add_space(design::SPACE_3);
         if let Some(job) = &self.job {
             let progress = job.progress();
             ui.horizontal(|ui| {
@@ -980,14 +1070,21 @@ impl DepotPanel {
                 } else {
                     "正在解析清单…"
                 });
-                if ui
-                    .add_enabled(!job.cancelling(), egui::Button::new("取消任务"))
-                    .clicked()
-                {
-                    job.cancel();
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::row_button(
+                        ui,
+                        "depot-cancel",
+                        "取消任务",
+                        None,
+                        egui_mineral_material::prelude::ButtonVariant::Text,
+                        !job.cancelling(),
+                    ) {
+                        job.cancel();
+                    }
+                });
             });
             if let Some(fraction) = progress.fraction {
+                ui.add_space(design::SPACE_2);
                 ui.add(egui::ProgressBar::new(fraction).show_percentage());
             }
             Self::show_progress(ui, &progress);
@@ -995,11 +1092,12 @@ impl DepotPanel {
         }
 
         if let Some(plan) = &self.plan {
-            ui.label(format!(
-                "清单 AppID {} · {} 个 Depot",
-                plan.app_id,
-                plan.depots.len()
-            ));
+            widgets::key_value(
+                ui,
+                "清单 AppID",
+                &format!("{} · {} 个 Depot", plan.app_id, plan.depots.len()),
+            );
+            ui.add_space(design::SPACE_2);
             let depot_label = |depot: &depot::Depot| match depot.manifest {
                 Some(id) => format!("Depot {} · Manifest {id}", depot.id),
                 None => format!("Depot {} · 当前公开版本", depot.id),
@@ -1012,15 +1110,17 @@ impl DepotPanel {
                     }
                 });
             if app_id != Some(plan.app_id) {
-                ui.weak("请将输入的 AppID 改为清单中的 AppID。");
+                ui.add_space(design::SPACE_2);
+                widgets::caption(ui, "请将输入的 AppID 改为清单中的 AppID。");
             }
-            if ui
-                .add_enabled(
-                    library.is_some() && app_id == Some(plan.app_id),
-                    egui::Button::new("匿名下载所选 Depot"),
-                )
-                .clicked()
-                && let Some(library) = library
+            ui.add_space(design::SPACE_3);
+            if widgets::tonal_button_icon(
+                ui,
+                "depot-fetch",
+                "匿名下载所选 Depot",
+                egui_mineral_material::icons::ICON_DOWNLOAD,
+                library.is_some() && app_id == Some(plan.app_id),
+            ) && let Some(library) = library
             {
                 self.downloaded = None;
                 self.staged = None;
@@ -1031,19 +1131,13 @@ impl DepotPanel {
                     library: library.clone(),
                 });
             }
-        } else if ui.button("解析清单").clicked() {
+        } else if widgets::tonal_button(ui, "depot-inspect", "解析清单", true) {
             self.start(depot::Request::Inspect(manifest.clone()));
         }
 
-        match &self.result {
-            Some(Ok(message)) => {
-                ui.label(*message);
-            }
-            Some(Err(message)) => {
-                let error_color = ui.visuals().error_fg_color;
-                ui.colored_label(error_color, message);
-            }
-            None => {}
+        if let Some(result) = &self.result {
+            let banner = result.as_ref().map(|message| message.to_string()).map_err(|error| error.clone());
+            widgets::result_banner(ui, &banner);
         }
         Self::show_progress(ui, &self.last_progress);
     }
@@ -1055,8 +1149,9 @@ impl DepotPanel {
         if self.job.is_some() {
             return;
         }
-        ui.separator();
-        ui.heading("复用已下载文件");
+        ui.add_space(design::SPACE_4);
+        widgets::subhead(ui, egui_mineral_material::icons::ICON_INVENTORY_2, "复用已下载文件");
+        ui.add_space(design::SPACE_2);
         if let Some((library, id)) = &self.staged {
             let verifying = steam_library::installed_location(library, *id).is_some();
             let button = if verifying {
@@ -1064,27 +1159,24 @@ impl DepotPanel {
             } else {
                 "在 Steam 中继续安装"
             };
-            if ui.button(button).clicked() {
+            if widgets::tonal_button(ui, "depot-handoff", button, true) {
                 self.handoff = Some(if verifying {
                     library.client.verify(*id)
                 } else {
                     library.client.install(*id)
                 });
             }
-            match &self.handoff {
-                Some(Ok(())) => {
-                    ui.label("已向 Steam 发出请求。请在同一 Steam 库继续安装或校验。");
-                }
-                Some(Err(error)) => {
-                    let error_color = ui.visuals().error_fg_color;
-                    ui.colored_label(error_color, error);
-                }
-                None => {}
+            if let Some(result) = &self.handoff {
+                let banner = result
+                    .as_ref()
+                    .map(|()| "已向 Steam 发出请求。请在同一 Steam 库继续安装或校验。".to_owned())
+                    .map_err(|error| error.clone());
+                widgets::result_banner(ui, &banner);
             }
             return;
         }
         if libraries.is_empty() {
-            ui.label("未发现 Steam 库。请先在 Steam 中配置库目录，再刷新 Steam 库。");
+            widgets::caption(ui, "未发现 Steam 库。请先在 Steam 中配置库目录，再刷新 Steam 库。");
             return;
         }
         if !self
@@ -1131,24 +1223,31 @@ impl DepotPanel {
         let Some(library) = &self.import_library else {
             return;
         };
+        ui.add_space(design::SPACE_2);
         let registered = steam_library::app_record(library, *id);
         let folder = if let Some((folder, _)) = &registered {
-            ui.label(format!("Steam 安装目录 · {folder}"));
+            widgets::key_value(ui, "Steam 安装目录", folder);
             folder.as_str()
         } else {
             let label = ui.label("Steam 安装目录名（steamapps/common 下）");
-            ui.add(TextEdit::singleline(&mut self.import_folder).desired_width(260.0))
-                .labelled_by(label.id);
-            ui.weak("可先在 Steam 开始安装、暂停，再刷新库以自动读取目录名。");
+            ui.add(
+                TextEdit::singleline(&mut self.import_folder)
+                    .desired_width(260.0)
+                    .min_size(egui::vec2(260.0, 36.0)),
+            )
+            .labelled_by(label.id);
+            ui.add_space(design::SPACE_1);
+            widgets::caption(ui, "可先在 Steam 开始安装、暂停，再刷新库以自动读取目录名。");
             self.import_folder.trim()
         };
-        if ui
-            .add_enabled(
-                steam_library::valid_folder(folder),
-                egui::Button::new("复制到 Steam 库"),
-            )
-            .clicked()
-        {
+        ui.add_space(design::SPACE_3);
+        if widgets::tonal_button_icon(
+            ui,
+            "depot-stage",
+            "复制到 Steam 库",
+            egui_mineral_material::icons::ICON_FOLDER_OPEN,
+            steam_library::valid_folder(folder),
+        ) {
             self.start(depot::Request::Stage {
                 app_id: *id,
                 source: source.clone(),
@@ -1160,10 +1259,11 @@ impl DepotPanel {
 
     fn show_progress(ui: &mut egui::Ui, progress: &depot::Progress) {
         if let Some(path) = &progress.output {
-            ui.label(format!("输出目录 · {}", path.display()));
+            ui.add_space(design::SPACE_2);
+            ui.weak(RichText::new(format!("输出目录 · {}", path.display())).size(design::TEXT_LABEL));
         }
         if !progress.detail.is_empty() {
-            ui.weak(&progress.detail);
+            ui.weak(RichText::new(&progress.detail).size(design::TEXT_LABEL));
         }
     }
 }

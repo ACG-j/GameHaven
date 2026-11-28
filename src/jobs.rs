@@ -79,17 +79,21 @@ impl StoreLookup {
         *self = Self::Finished(*app_id, result);
     }
 
-    pub(crate) fn show(&self, ui: &mut egui::Ui, current_id: Option<u32>) {
+    pub(crate) fn show(&self, ui: &mut egui_mineral_material::MaterialUi<'_>, current_id: Option<u32>) {
+        use crate::design;
+        use crate::widgets;
         match self {
             Self::Pending(app_id, _) => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label(format!("正在查询 AppID {app_id}…"));
+                    ui.add_space(design::SPACE_2);
+                    widgets::caption(ui, &format!("正在查询 AppID {app_id}…"));
                 });
             }
             Self::Finished(app_id, result) if Some(*app_id) == current_id => match result {
                 Ok(Some(app)) => {
-                    ui.label(RichText::new(&app.name).strong());
+                    ui.label(RichText::new(&app.name).size(design::TEXT_TITLE).strong());
+                    ui.add_space(design::SPACE_2);
                     let platforms: Vec<_> = app
                         .platforms
                         .iter()
@@ -104,16 +108,24 @@ impl StoreLookup {
                         })
                         .collect();
                     if platforms.is_empty() {
-                        ui.weak("商店未列出支持平台。");
+                        widgets::caption(ui, "商店未列出支持平台。");
                     } else {
-                        ui.label(format!("商店列出的平台 · {}", platforms.join(" / ")));
+                        ui.horizontal(|ui| {
+                            let variant = design::on_surface_variant(ui);
+                            for (index, platform) in platforms.iter().enumerate() {
+                                if index > 0 {
+                                    ui.add_space(design::SPACE_2);
+                                }
+                                widgets::status_chip(ui, platform, variant);
+                            }
+                        });
                     }
                 }
                 Ok(None) => {
-                    ui.label("Steam 商店未提供这个 AppID 的公开信息。");
+                    widgets::caption(ui, "Steam 商店未提供这个 AppID 的公开信息。");
                 }
                 Err(message) => {
-                    ui.colored_label(ui.visuals().error_fg_color, message);
+                    widgets::error_text(ui, message);
                 }
             },
             _ => {}

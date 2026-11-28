@@ -131,5 +131,5 @@ fn cache_path(app_id: u32) -> Option<PathBuf> {
     )
 }
 
-/// 16:9 封面的显示尺寸。
-pub const COVER_SIZE: egui::Vec2 = egui::vec2(88.0, 41.0);
+/// Steam header 封面（460×215）的显示尺寸。
+pub const COVER_SIZE: egui::Vec2 = egui::vec2(96.0, 45.0);
