@@ -134,6 +134,62 @@ impl GameHaven {
             path_row(ui, "配置", sls_config.as_deref());
         });
 
+        // 撤销：写操作前备份到 undo 目录，这里恢复最近一次。
+        let undo_info = journal::undo_info();
+        widgets::section(ui, "撤销", |ui| {
+            let Some(info) = undo_info.as_deref() else {
+                widgets::caption(ui, "没有可撤销的操作");
+                return;
+            };
+            widgets::caption(ui, &format!("最近一次写操作：{info}"));
+            ui.add_space(design::SPACE_2);
+
+            let confirm_id = ui.scope_id().with("undo-confirm");
+            let mut confirm = ui
+                .ctx()
+                .data(|data| data.get_temp::<bool>(confirm_id))
+                .unwrap_or(false);
+            if confirm {
+                ui.label(
+                    RichText::new("确认恢复最近一次写操作前的文件？").size(design::TEXT_BODY),
+                );
+                ui.add_space(design::SPACE_2);
+                ui.horizontal(|ui| {
+                    if widgets::filled_button(ui, "settings-undo-confirm", "确认撤销", true) {
+                        self.undo_last_write(ui.ctx());
+                        confirm = false;
+                    }
+                    ui.add_space(design::SPACE_2);
+                    if widgets::text_button(ui, "settings-undo-cancel", "取消") {
+                        confirm = false;
+                    }
+                });
+            } else if widgets::filled_button(ui, "settings-undo", "撤销最近一次写操作", true) {
+                confirm = true;
+            }
+            ui.ctx().data_mut(|data| data.insert_temp(confirm_id, confirm));
+
+            if let Some(result) = &self.undo_result {
+                ui.add_space(design::SPACE_2);
+                match result {
+                    Ok(message) => {
+                        ui.label(
+                            RichText::new(message.as_str())
+                                .size(design::TEXT_BODY)
+                                .color(design::OK),
+                        );
+                    }
+                    Err(message) => widgets::error_text(ui, message),
+                }
+            }
+
+            ui.add_space(design::SPACE_2);
+            widgets::caption(
+                ui,
+                "写操作前会把原文件复制到 ~/.local/share/gamehaven/undo，撤销恢复最近一次。",
+            );
+        });
+
         // 最近操作：journal 只追加，取最后几条帮助回查写过哪些文件。
         let entries = journal::tail(12);
         widgets::section(ui, "最近操作", |ui| {

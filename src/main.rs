@@ -16,6 +16,7 @@ mod env_panel;
 mod fonts;
 mod journal;
 mod pages;
+mod settings;
 mod sls;
 mod steam;
 mod steam_library;
@@ -216,6 +217,7 @@ fn run_add_game(
     config_path: &std::path::Path,
 ) -> Result<String, String> {
     let info = steam::appinfo::fetch(app_id)?;
+    journal::backup("一键添加", &[config_path]);
     let config = sls::config::Config::new(config_path.to_owned());
     config.add_app(app_id)?;
     for dlc in &info.dlcs {
@@ -297,9 +299,11 @@ pub(crate) struct GameHaven {
     pub(crate) remove_result: Option<Result<String, String>>,
     pub(crate) account_result: Option<Result<String, String>>,
     pub(crate) launch_result: Option<Result<String, String>>,
+    pub(crate) undo_result: Option<Result<String, String>>,
     pub(crate) repair: RepairJob,
     pub(crate) add_game: Option<Receiver<Result<String, String>>>,
     pub(crate) auto_restart: bool,
+    saved_auto_restart: bool,
 }
 
 impl GameHaven {
@@ -376,9 +380,11 @@ impl GameHaven {
             remove_result: None,
             account_result: None,
             launch_result: None,
+            undo_result: None,
             repair: RepairJob::Idle,
             add_game: None,
-            auto_restart: true,
+            auto_restart: settings::load().auto_restart,
+            saved_auto_restart: settings::load().auto_restart,
         })
     }
 
@@ -439,6 +445,7 @@ impl GameHaven {
             self.add_result = Some(Err("没有找到 SLSsteam 的 config.yaml。".to_owned()));
             return;
         };
+        journal::backup("添加游戏", &[path.as_path()]);
         let config = sls::config::Config::new(path);
         let dlcs = self.store_lookup.dlcs(app_id);
         let mut added = 0usize;
@@ -487,6 +494,7 @@ impl GameHaven {
             self.remove_result = Some(Err("没有找到 SLSsteam 的 config.yaml。".to_owned()));
             return;
         };
+        journal::backup("移除注入", &[path.as_path()]);
         let config = sls::config::Config::new(path);
         let mut errors = Vec::new();
         if let Err(error) = config.remove_app(app_id) {
@@ -518,6 +526,8 @@ impl GameHaven {
         }
         let steamapps = library.path.join("steamapps");
         let game_dir = steamapps.join("common").join(installdir);
+        let acf = steamapps.join(format!("appmanifest_{app_id}.acf"));
+        journal::backup("修复 ACF", &[acf.as_path()]);
         let ctx = ctx.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         match thread::Builder::new()
@@ -569,6 +579,9 @@ impl GameHaven {
             self.account_result = Some(Err("没有找到 Steam 库。".to_owned()));
             return;
         };
+        let loginusers = root.join("config/loginusers.vdf");
+        let config = root.join("config/config.vdf");
+        journal::backup("切换账号", &[loginusers.as_path(), config.as_path()]);
         match steam::accounts::switch(&root, &account) {
             Ok(()) => {
                 journal::record(&format!("切换自动登录账号为 {account}"));
@@ -581,6 +594,18 @@ impl GameHaven {
     }
 
     /// 一键添加：查 appinfo → 写 AdditionalApps/DlcData → 拉 depot manifest → 可选重启。
+    pub(crate) fn undo_last_write(&mut self, ctx: &egui::Context) {
+        match journal::undo_last() {
+            Ok(message) => {
+                self.undo_result = Some(Ok(message));
+                self.env.refresh(ctx);
+                self.libraries = steam_library::discover();
+                self.installed = None;
+            }
+            Err(error) => self.undo_result = Some(Err(error)),
+        }
+    }
+
     pub(crate) fn start_add_game(&mut self, app_id: u32, ctx: &egui::Context) {
         if self.add_game.is_some() {
             return;
@@ -728,6 +753,16 @@ impl GameHaven {
 
         match steam::manifest::install(&steam_root, &library, &file) {
             Ok(written) => {
+                let mut backups: Vec<PathBuf> = vec![steam_root.join("depotcache")];
+                if let Some(config_path) = steam::env::sls_config_path() {
+                    backups.clear();
+                    backups.push(config_path);
+                }
+                if let Ok(app_id) = design::validate_app_id(&self.app_id) {
+                    backups.push(library.join("steamapps").join(format!("appmanifest_{app_id}.acf")));
+                }
+                let refs: Vec<&std::path::Path> = backups.iter().map(PathBuf::as_path).collect();
+                journal::backup("导入 manifest", &refs);
                 let mut notes = vec![format!("manifest 已写入 {} 处", written.len())];
                 if let Some(config_path) = steam::env::sls_config_path() {
                     let config = sls::config::Config::new(config_path);
@@ -915,6 +950,14 @@ impl eframe::App for GameHaven {
             self.depot_manifest = Some(path);
             self.depot_manifest_result = None;
             ui.ctx().request_repaint();
+        }
+
+        // 开关变化时落盘，下次启动沿用。
+        if self.auto_restart != self.saved_auto_restart {
+            settings::save(&settings::Settings {
+                auto_restart: self.auto_restart,
+            });
+            self.saved_auto_restart = self.auto_restart;
         }
     }
 }

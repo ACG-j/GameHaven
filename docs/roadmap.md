@@ -24,6 +24,21 @@
 
 ---
 
+## 进度快照（2026-11-28）
+
+| 阶段 | 完成度 | 已交付 | 缺口 |
+| --- | --- | --- | --- |
+| P0 添加闭环 | 5/5 | 体检、配置行编辑、注入启停、一键添加、撤销 | — |
+| P1 清单与版本 | 4/5 | manifest 下载/落盘、ManifestIds、DLC 映射、搜索、移除注入 | manifest AES 解密/protobuf 校验（当前镜像提供已解密文件）；移除不清理 ACF/depotcache |
+| P2 库与账号 | 3.5/4 | 封面、大小、注入标记、启动、ACF 修复、账号切换 | 成就（SLScheevo）；「最后更新」「能否下载」 |
+| P3 打磨 | 3/6 | 设置页、日志面板、设置持久化 | i18n、AppImage/Flatpak 打包、自更新、崩溃恢复 |
+
+代码量约 6.3k 行 Rust，36 个测试。核心旅程「输入 AppID → 写入 SLSsteam → Steam 认账」已闭环。Forza 这类需要 ownership ticket 的游戏受 SLSsteam 能力限制（作者已移除 SmartTickets），不属于本项目代码缺口。
+
+roadmap 最初未列、后来补上的能力：封面缓存、游戏启动、ACF 修复、Steam 32 位锁定检测、SLSsteam 加载失败检测、账号切换、操作日志与撤销、设置持久化。
+
+---
+
 ## 1. 定位：对标 OST 的正确含义
 
 OpenSteamTool 是 Windows 上的客户端注入（`dwmapi.dll` / `xinput1_4.dll` 劫持，加载 `OpenSteamTool.dll`），**它的二进制在 Linux 上没有任何意义**，只能对标功能。
