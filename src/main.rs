@@ -287,7 +287,17 @@ impl GameHaven {
         };
         journal::backup("添加游戏", &[path.as_path()]);
         let config = sls::config::Config::new(path);
-        let dlcs = self.store_lookup.dlcs(app_id);
+        // 商店的 dlc 数组和 appinfo 的 dlcappid 各有覆盖：合并去重后再写。
+        let mut dlcs = steam::appinfo::fetch(app_id)
+            .map(|info| info.dlcs)
+            .unwrap_or_default();
+        for dlc in self.store_lookup.dlcs(app_id) {
+            if !dlcs.contains(&dlc) {
+                dlcs.push(dlc);
+            }
+        }
+        dlcs.sort();
+        dlcs.dedup();
         let mut added = 0usize;
         let mut errors = Vec::new();
 
