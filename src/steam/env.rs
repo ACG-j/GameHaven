@@ -284,6 +284,10 @@ pub(crate) fn find_steam_processes() -> Vec<ProcessInfo> {
     processes
 }
 
+pub fn steam_root() -> Option<PathBuf> {
+    find_roots().into_iter().next().map(|root| root.path)
+}
+
 pub fn sls_so_path() -> Option<PathBuf> {
     let home = std::env::home_dir()?;
     [

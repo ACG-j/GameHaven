@@ -6,10 +6,12 @@ use egui_mineral_material::prelude::{Select, SelectOption, TextField, TextFieldV
 
 use crate::DepotPanel;
 use crate::GameHaven;
-use crate::design::{OK, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY};
+use crate::design::validate_app_id;
+use crate::design::{
+    OK, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_BODY, TEXT_LABEL, on_surface_variant,
+};
 use crate::sls;
 use crate::steam;
-use crate::design::validate_app_id;
 use crate::widgets;
 
 /// 搜索结果一次最多列出多少条，避免长列表把卡片撑高。
@@ -265,6 +267,63 @@ impl GameHaven {
             self.download.show_import(ui, &self.libraries);
         });
 
+        // 第四步：用户自备的 manifest，用来把 depot 锁在固定版本上。
+        widgets::section(ui, "4 · 本地 manifest 与版本", |ui| {
+            widgets::caption(
+                ui,
+                "文件名必须是 <depot>_<manifest>.manifest。导入后会写入 Steam 的 depotcache、写 SLSsteam 的 ManifestIds，并按当前 AppID 生成 ACF。",
+            );
+
+            // 文件选择行：左边挑文件，右边显示当前路径（超宽截断）。
+            ui.add_space(SPACE_3);
+            ui.horizontal(|ui| {
+                if widgets::tonal_button(ui, "add-depot-manifest", "选择 .manifest", true) {
+                    self.depot_manifest_dialog.pick_file();
+                }
+                ui.add_space(SPACE_2);
+                match &self.depot_manifest {
+                    Some(path) => path_caption(ui, path),
+                    None => widgets::caption(ui, "尚未选择"),
+                }
+            });
+
+            // 解析只看文件名，所以每次重绘重新算一遍即可。
+            let parsed = self
+                .depot_manifest
+                .as_deref()
+                .and_then(steam::manifest::parse);
+            if self.depot_manifest.is_some() {
+                ui.add_space(SPACE_1);
+                match &parsed {
+                    Some(file) => widgets::caption(
+                        ui,
+                        &format!("Depot {} · Manifest {}", file.depot_id, file.manifest_id),
+                    ),
+                    None => widgets::error_text(ui, "文件名不是 <depot>_<manifest>.manifest"),
+                }
+            }
+
+            // 解析成功才能导入：导入会落盘、写 ManifestIds 并生成 ACF。
+            ui.add_space(SPACE_3);
+            let ready = parsed.is_some();
+            if widgets::filled_button(ui, "add-import-manifest", "导入并锁定", ready) {
+                self.import_depot_manifest(ui.ctx());
+            }
+
+            // 上一次导入的结果。
+            match &self.depot_manifest_result {
+                Some(Ok(message)) => {
+                    ui.add_space(SPACE_3);
+                    ui.label(RichText::new(message.as_str()).size(TEXT_BODY).color(OK));
+                }
+                Some(Err(message)) => {
+                    ui.add_space(SPACE_3);
+                    widgets::error_text(ui, message);
+                }
+                None => {}
+            }
+        });
+
         // Steam 客户端安装入口；只在 AppID 有效时显示。
         if let Some(id) = app_id {
             self.show_steam_install(ui, id);
@@ -276,5 +335,15 @@ impl GameHaven {
 fn path_label(ui: &mut MaterialUi<'_>, path: &Path) {
     let text = path.display().to_string();
     let response = ui.add(egui::Label::new(RichText::new(text.clone()).size(TEXT_BODY)).truncate());
+    response.on_hover_text(text);
+}
+
+/// 弱化的路径文字：caption 字号，超宽截断，悬停显示完整路径。
+fn path_caption(ui: &mut MaterialUi<'_>, path: &Path) {
+    let text = path.display().to_string();
+    let color = on_surface_variant(ui);
+    let response = ui.add(
+        egui::Label::new(RichText::new(text.clone()).size(TEXT_LABEL).color(color)).truncate(),
+    );
     response.on_hover_text(text);
 }

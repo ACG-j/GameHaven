@@ -70,6 +70,14 @@ impl StoreLookup {
         matches!(self, Self::Pending(..))
     }
 
+    /// 查询结果里的游戏名；未查询或不匹配时为 `None`。
+    pub(crate) fn name(&self, app_id: u32) -> Option<String> {
+        match self {
+            Self::Finished(id, Ok(Some(app))) if *id == app_id => Some(app.name.clone()),
+            _ => None,
+        }
+    }
+
     /// 查询结果里的 DLC AppID；未查询或不匹配时为空。
     pub(crate) fn dlcs(&self, app_id: u32) -> Vec<u32> {
         match self {
@@ -222,8 +230,11 @@ pub(crate) struct GameHaven {
     pub(crate) search: StoreSearch,
     pub(crate) manifest: Option<PathBuf>,
     pub(crate) library: Option<PathBuf>,
+    pub(crate) depot_manifest: Option<PathBuf>,
     pub(crate) manifest_dialog: FileDialog,
     pub(crate) library_dialog: FileDialog,
+    pub(crate) depot_manifest_dialog: FileDialog,
+    pub(crate) depot_manifest_result: Option<Result<String, String>>,
     pub(crate) download: DepotPanel,
     pub(crate) libraries: Vec<steam_library::Library>,
     pub(crate) installed: Option<(u32, Option<PathBuf>)>,
@@ -291,8 +302,11 @@ impl GameHaven {
             search: StoreSearch::default(),
             manifest: None,
             library: None,
+            depot_manifest: None,
             manifest_dialog: picker("manifest", labels.clone()),
-            library_dialog: picker("library", labels),
+            library_dialog: picker("library", labels.clone()),
+            depot_manifest_dialog: picker("depot-manifest", labels),
+            depot_manifest_result: None,
             download: DepotPanel::default(),
             libraries: steam_library::discover(),
             installed: None,
@@ -442,6 +456,73 @@ impl GameHaven {
         }
     }
 
+    /// 把用户提供的 `.manifest` 放到 depotcache，写 ManifestIds，并为当前 AppID 生成安装记录。
+    pub(crate) fn import_depot_manifest(&mut self, _ctx: &egui::Context) {
+        let Some(path) = self.depot_manifest.clone() else {
+            self.depot_manifest_result = Some(Err("先选择一个 .manifest 文件。".to_owned()));
+            return;
+        };
+        let Some(file) = steam::manifest::parse(&path) else {
+            self.depot_manifest_result = Some(Err(
+                "文件名不是 <depot>_<manifest>.manifest，无法解析。".to_owned(),
+            ));
+            return;
+        };
+        let Some(steam_root) = steam::env::steam_root() else {
+            self.depot_manifest_result = Some(Err("没有找到 Steam 安装目录。".to_owned()));
+            return;
+        };
+        let Some(library) = self
+            .library
+            .clone()
+            .or_else(|| self.libraries.first().map(|library| library.path.clone()))
+        else {
+            self.depot_manifest_result = Some(Err("没有找到 Steam 库。".to_owned()));
+            return;
+        };
+
+        match steam::manifest::install(&steam_root, &library, &file) {
+            Ok(written) => {
+                let mut notes = vec![format!("manifest 已写入 {} 处", written.len())];
+                if let Some(config_path) = steam::env::sls_config_path() {
+                    let config = sls::config::Config::new(config_path);
+                    match config.set_manifest(file.depot_id, file.manifest_id) {
+                        Ok(true) => notes.push("ManifestIds 已更新".to_owned()),
+                        Ok(false) => notes.push("ManifestIds 已是该版本".to_owned()),
+                        Err(error) => notes.push(format!("ManifestIds 写入失败：{error}")),
+                    }
+                }
+                if let Ok(app_id) = design::validate_app_id(&self.app_id) {
+                    let name = self
+                        .store_lookup
+                        .name(app_id)
+                        .unwrap_or_else(|| format!("App {app_id}"));
+                    let installdir = steam::acf::sanitize_installdir(&name);
+                    let game = steam::acf::GameInfo {
+                        app_id,
+                        name: &name,
+                        installdir: &installdir,
+                        build_id: "0",
+                        size_on_disk: 0,
+                        depots: &[(file.depot_id, file.manifest_id)],
+                    };
+                    match steam::acf::write(&library.join("steamapps"), &game) {
+                        Ok(acf) => notes.push(format!("已生成 {}", acf.display())),
+                        Err(error) => notes.push(format!("ACF 生成失败：{error}")),
+                    }
+                } else {
+                    notes.push("AppID 为空，未生成 ACF".to_owned());
+                }
+                journal::record(&format!(
+                    "导入 manifest：depot {} / manifest {}",
+                    file.depot_id, file.manifest_id
+                ));
+                self.depot_manifest_result = Some(Ok(notes.join("；")));
+            }
+            Err(error) => self.depot_manifest_result = Some(Err(error)),
+        }
+    }
+
     fn sidebar(&mut self, ui: &mut MaterialUi<'_>) {
         let weak = design::on_surface_variant(ui);
         ui.add_space(design::SPACE_5);
@@ -582,6 +663,12 @@ impl eframe::App for GameHaven {
         self.library_dialog.update(ui.ctx());
         if let Some(path) = self.library_dialog.take_picked() {
             self.library = Some(path);
+            ui.ctx().request_repaint();
+        }
+        self.depot_manifest_dialog.update(ui.ctx());
+        if let Some(path) = self.depot_manifest_dialog.take_picked() {
+            self.depot_manifest = Some(path);
+            self.depot_manifest_result = None;
             ui.ctx().request_repaint();
         }
     }
