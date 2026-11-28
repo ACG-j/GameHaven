@@ -9,6 +9,15 @@ use serde_json::Value;
 
 const INFO_URL: &str = "https://api.steamcmd.net/v1/info";
 
+/// 一个 DLC 对应的 depot。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DlcDepot {
+    pub depot_id: u32,
+    pub dlc_app_id: u32,
+    pub manifest_id: u64,
+    pub size: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct AppInfo {
     pub name: String,
@@ -16,6 +25,8 @@ pub struct AppInfo {
     /// `(depot_id, latest_manifest_id)`
     pub depots: Vec<(u32, u64)>,
     pub dlcs: Vec<u32>,
+    /// DLC depot 及其最新 manifest，用于内容下载。
+    pub dlc_depots: Vec<DlcDepot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,17 +103,30 @@ fn parse(parsed: InfoResponse, app_id: u32) -> Result<AppInfo, String> {
         let Ok(depot_id) = key.parse::<u32>() else {
             continue;
         };
-        if let Some(gid) = value
+        let manifest_id = value
             .pointer("/manifests/public/gid")
             .and_then(Value::as_str)
-            && let Ok(manifest_id) = gid.parse::<u64>()
-        {
+            .and_then(|gid| gid.parse::<u64>().ok());
+        if let Some(manifest_id) = manifest_id {
             info.depots.push((depot_id, manifest_id));
         }
         if let Some(dlc) = value.get("dlcappid").and_then(Value::as_str)
             && let Ok(dlc_id) = dlc.parse::<u32>()
         {
             info.dlcs.push(dlc_id);
+            if let Some(manifest_id) = manifest_id {
+                let size = value
+                    .pointer("/manifests/public/size")
+                    .and_then(Value::as_str)
+                    .and_then(|size| size.parse().ok())
+                    .unwrap_or(0);
+                info.dlc_depots.push(DlcDepot {
+                    depot_id,
+                    dlc_app_id: dlc_id,
+                    manifest_id,
+                    size,
+                });
+            }
         }
     }
     info.depots.sort();
@@ -139,5 +163,8 @@ mod tests {
             vec![(2483191, 8260642490601717688), (4439240, 111)]
         );
         assert_eq!(info.dlcs, vec![4439240]);
+        assert_eq!(info.dlc_depots.len(), 1);
+        assert_eq!(info.dlc_depots[0].depot_id, 4439240);
+        assert_eq!(info.dlc_depots[0].manifest_id, 111);
     }
 }

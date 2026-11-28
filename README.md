@@ -26,7 +26,7 @@ X11 与 Wayland 都可以运行。
 | 页面 | 能做什么 |
 | --- | --- |
 | 游戏库 | 发现原生 / Flatpak Steam 库；加载封面，列出已安装游戏、占用空间和「未完成」标记；标出已注入 SLSsteam 的游戏，点击标记可移除注入；未完成记录可一键按实际目录修复 ACF；每行可直接启动 |
-| 添加游戏 | 输入 AppID 后「一键添加」：查 appinfo、写入游戏与 DLC、拉取 depot manifest、按设置重启 Steam；也保留手动分步（写入配置 / 解析本地清单 / manifest 导入） |
+| 添加游戏 | 输入 AppID 后「一键添加」：查 appinfo、写入游戏与 DLC、拉取 depot manifest、按设置重启 Steam；也保留手动分步（写入配置 / 解析本地清单 / manifest 导入 / DLC 内容下载） |
 | 环境 | 体检汇总 chip + 检查项列表（正常项折叠）；一键重启 Steam 并校验注入 |
 | 设置 | 自动重启开关、Steam 账号切换、撤销最近一次写操作、SLScheevo 检测、检查更新、最近操作日志、路径、版本与许可证 |
 
@@ -48,7 +48,7 @@ cargo run --locked
 
 - Steam 客户端（原生或 Flatpak）。首次使用前先启动并登录一次。
 - SLSsteam，用于解锁和注入。程序会检测安装位置、版本和 `LD_AUDIT` 是否生效。
-- 可选：`smd` 与 `DepotDownloader`，只在本地清单解析和匿名 Depot 下载时使用。可通过 `GAMEHAVEN_SMD`、`GAMEHAVEN_DEPOT_DOWNLOADER` 指定绝对路径。
+- 可选：`smd` 与 `DepotDownloader`，只在本地清单解析、匿名 Depot 下载和 DLC 内容下载时使用。可通过 `GAMEHAVEN_SMD`、`GAMEHAVEN_DEPOT_DOWNLOADER` 指定绝对路径。
 
 ## 注入是怎么生效的
 

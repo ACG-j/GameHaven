@@ -29,7 +29,7 @@
 | 阶段 | 完成度 | 已交付 | 缺口 |
 | --- | --- | --- | --- |
 | P0 添加闭环 | 5/5 | 体检、配置行编辑、注入启停、一键添加、撤销 | — |
-| P1 清单与版本 | 4/5 | manifest 下载/落盘、ManifestIds、DLC 映射、搜索、移除注入 | manifest AES 解密/protobuf 校验（当前镜像提供已解密文件）；移除不清理 ACF/depotcache |
+| P1 清单与版本 | 4.5/5 | manifest 下载/落盘、ManifestIds、DLC 映射（商店 + appinfo 合并）、DLC depot 下载流程、搜索、移除注入 | manifest AES 解密/protobuf 校验（当前镜像提供已解密文件）；移除不清理 ACF/depotcache |
 | P2 库与账号 | 3.5/4 | 封面、大小、注入标记、启动、ACF 修复、账号切换、SLScheevo 检测 | 成就生成与导入（依赖外部工具）；「最后更新」「能否下载」 |
 | P3 打磨 | 5/6 | 设置页、日志面板、设置持久化、崩溃日志、更新检查、AppImage 脚本 | i18n（当前仅中文） |
 

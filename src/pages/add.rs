@@ -416,6 +416,40 @@ impl GameHaven {
             }
         });
 
+        // 5 · DLC 内容：Steam 不会为注入的 DLC 下载 depot，用 DepotDownloader 补。
+        widgets::section_step(ui, 5, "DLC 内容", |ui| {
+            widgets::caption(
+                ui,
+                "SLSsteam 会让 Steam 认为 DLC 已安装，所以 Steam 不会下载 DLC 的 depot；这里用 DepotDownloader 补齐缺失内容。",
+            );
+            ui.add_space(SPACE_3);
+            let busy = self.dlc_download.is_some();
+            ui.horizontal(|ui| {
+                if widgets::filled_button(
+                    ui,
+                    "add-dlc-download",
+                    "下载缺失 DLC",
+                    app_id.is_some() && !busy,
+                ) {
+                    if let Some(id) = app_id {
+                        self.start_dlc_download(id, ui.ctx());
+                    }
+                }
+                if busy {
+                    ui.spinner();
+                    widgets::caption(ui, "正在检查并下载 DLC depot…");
+                }
+            });
+            if let Some(result) = &self.dlc_result {
+                widgets::result_banner(ui, result);
+            }
+            ui.add_space(SPACE_2);
+            widgets::caption(
+                ui,
+                "需要 DepotDownloader（.NET 9）在 PATH 或 GAMEHAVEN_DEPOT_DOWNLOADER 中；匿名模式对部分 DLC 可能失败。",
+            );
+        });
+
         // Steam 客户端安装入口；只在 AppID 有效时显示。
         if let Some(id) = app_id {
             self.show_steam_install(ui, id);

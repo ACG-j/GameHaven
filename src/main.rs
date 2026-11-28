@@ -65,6 +65,70 @@ impl Page {
     }
 }
 
+fn depot_downloader() -> Option<String> {
+    if let Ok(path) = std::env::var("GAMEHAVEN_DEPOT_DOWNLOADER") {
+        return Some(path);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|directory| directory.join("DepotDownloader"))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
+fn run_dlc_download(
+    app_id: u32,
+    acf: &std::path::Path,
+    game_dir: &std::path::Path,
+    downloader: Option<&str>,
+) -> Result<String, String> {
+    let missing = steam::dlc::missing(app_id, acf)?;
+    if missing.is_empty() {
+        return Ok("所有 DLC depot 都已经登记。".to_owned());
+    }
+    let Some(downloader) = downloader else {
+        return Err(format!(
+            "有 {} 个 DLC 需要下载，但没有找到 DepotDownloader。安装 .NET 9 版 DepotDownloader，或设置 GAMEHAVEN_DEPOT_DOWNLOADER。",
+            missing.len()
+        ));
+    };
+
+    let mut ok = 0usize;
+    let mut failed = Vec::new();
+    for depot in &missing {
+        let status = std::process::Command::new(downloader)
+            .arg("-app")
+            .arg(app_id.to_string())
+            .arg("-depot")
+            .arg(depot.depot_id.to_string())
+            .arg("-manifest")
+            .arg(depot.manifest_id.to_string())
+            .arg("-dir")
+            .arg(game_dir)
+            .arg("-anonymous")
+            .status();
+        match status {
+            Ok(status) if status.success() => ok += 1,
+            Ok(status) => failed.push(format!("{}（{status}）", depot.dlc_app_id)),
+            Err(error) => failed.push(format!("{}（{error}）", depot.dlc_app_id)),
+        }
+    }
+
+    journal::record(&format!(
+        "DLC 下载 {app_id}：成功 {ok} 个，失败 {} 个",
+        failed.len()
+    ));
+    if failed.is_empty() {
+        Ok(format!("已下载 {ok} 个 DLC depot。"))
+    } else {
+        Err(format!(
+            "成功 {ok} 个，失败 {} 个：{}",
+            failed.len(),
+            failed.join("、")
+        ))
+    }
+}
+
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let line = format!("{info}\n");
@@ -135,6 +199,8 @@ pub(crate) struct GameHaven {
     pub(crate) undo_result: Option<Result<String, String>>,
     pub(crate) update_check: Option<Receiver<Result<String, String>>>,
     pub(crate) update_result: Option<Result<String, String>>,
+    pub(crate) dlc_download: Option<Receiver<Result<String, String>>>,
+    pub(crate) dlc_result: Option<Result<String, String>>,
     pub(crate) repair: RepairJob,
     pub(crate) add_game: Option<Receiver<Result<String, String>>>,
     pub(crate) auto_restart: bool,
@@ -220,6 +286,8 @@ impl GameHaven {
             undo_result: None,
             update_check: None,
             update_result: None,
+            dlc_download: None,
+            dlc_result: None,
             repair: RepairJob::Idle,
             add_game: None,
             auto_restart: settings::load().auto_restart,
@@ -237,6 +305,7 @@ impl GameHaven {
         self.poll_manifest_download(ctx);
         self.poll_add_game(ctx);
         self.poll_update(ctx);
+        self.poll_dlc_download(ctx);
         self.download.poll(ctx, &mut self.app_id);
     }
 
@@ -484,6 +553,73 @@ impl GameHaven {
         if let Some(result) = result {
             self.update_check = None;
             self.update_result = Some(result);
+        }
+    }
+
+    pub(crate) fn start_dlc_download(&mut self, app_id: u32, ctx: &egui::Context) {
+        if self.dlc_download.is_some() {
+            return;
+        }
+        let Some(library) = self
+            .libraries
+            .iter()
+            .find(|library| Some(&library.path) == self.library.as_ref())
+            .cloned()
+            .or_else(|| self.libraries.first().cloned())
+        else {
+            self.dlc_result = Some(Err("没有找到 Steam 库。".to_owned()));
+            return;
+        };
+        let acf = library
+            .path
+            .join("steamapps")
+            .join(format!("appmanifest_{app_id}.acf"));
+        if !acf.is_file() {
+            self.dlc_result = Some(Err(format!("没有找到 AppID {app_id} 的 appmanifest。")));
+            return;
+        }
+        let Some((installdir, _)) = steam_library::app_record(&library, app_id) else {
+            self.dlc_result = Some(Err(format!("无法读取 {app_id} 的安装目录。")));
+            return;
+        };
+        let game_dir = library.path.join("steamapps/common").join(installdir);
+        let downloader = depot_downloader();
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match thread::Builder::new()
+            .name("dlc-download".into())
+            .spawn(move || {
+                let result = run_dlc_download(app_id, &acf, &game_dir, downloader.as_deref());
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            }) {
+            Ok(_) => {
+                self.dlc_result = None;
+                self.dlc_download = Some(receiver);
+            }
+            Err(error) => {
+                self.dlc_result = Some(Err(format!("无法启动 DLC 下载任务（{error}）。")));
+            }
+        }
+    }
+
+    fn poll_dlc_download(&mut self, ctx: &egui::Context) {
+        let result = match &self.dlc_download {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("DLC 下载任务意外结束。".to_owned()))
+                }
+            },
+            None => None,
+        };
+        if let Some(result) = result {
+            self.dlc_download = None;
+            self.dlc_result = Some(result);
         }
     }
 
