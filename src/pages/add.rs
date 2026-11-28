@@ -145,6 +145,34 @@ impl GameHaven {
                 Some(path) => {
                     widgets::key_value(ui, "配置文件", &path.display().to_string());
                     ui.add_space(SPACE_4);
+
+                    // 一键添加：查 appinfo、写入游戏与 DLC，再尝试从公开镜像拉 manifest；
+                    // 跑完由 main.rs 按 auto_restart 决定是否重启 Steam。
+                    ui.horizontal(|ui| {
+                        if widgets::filled_button(
+                            ui,
+                            "add-oneclick",
+                            "一键添加",
+                            app_id.is_some() && self.add_game.is_none(),
+                        ) && let Some(id) = app_id
+                        {
+                            self.start_add_game(id, ui.ctx());
+                        }
+                        if self.add_game.is_some() {
+                            ui.add_space(SPACE_2);
+                            ui.spinner();
+                        }
+                    });
+                    if self.add_game.is_some() {
+                        widgets::caption(ui, "正在查询 appinfo、写入配置并拉取 manifest…");
+                    }
+                    ui.add_space(SPACE_1);
+                    widgets::caption(
+                        ui,
+                        "一键添加会写入游戏与 DLC，并自动尝试从公开镜像下载 depot manifest；完成后按设置自动重启 Steam。",
+                    );
+                    ui.add_space(SPACE_4);
+
                     widgets::switch(
                         ui,
                         "auto-restart",

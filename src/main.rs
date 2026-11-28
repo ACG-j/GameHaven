@@ -209,6 +209,47 @@ impl StoreSearch {
     }
 }
 
+fn run_add_game(
+    app_id: u32,
+    steam_root: &std::path::Path,
+    library: &std::path::Path,
+    config_path: &std::path::Path,
+) -> Result<String, String> {
+    let info = steam::appinfo::fetch(app_id)?;
+    let config = sls::config::Config::new(config_path.to_owned());
+    config.add_app(app_id)?;
+    for dlc in &info.dlcs {
+        let _ = config.add_app(*dlc);
+        let _ = config.add_dlc(app_id, *dlc, &format!("DLC {dlc}"));
+    }
+
+    // 最多处理 6 个 depot：镜像覆盖有限，失败就交给 Steam 自己从 CDN 拉。
+    let mut downloaded = 0usize;
+    for (depot, manifest) in info.depots.iter().take(6) {
+        if let Ok(bytes) = steam::manifest::download(*depot, *manifest)
+            && let Ok(file) = steam::manifest::cache_bytes(*depot, *manifest, &bytes)
+            && steam::manifest::install(steam_root, library, &file).is_ok()
+        {
+            let _ = config.set_manifest(*depot, *manifest);
+            downloaded += 1;
+        }
+    }
+
+    let name = if info.name.is_empty() {
+        format!("App {app_id}")
+    } else {
+        info.name
+    };
+    journal::record(&format!(
+        "一键添加 {app_id}（{name}），DLC {} 个，manifest {downloaded} 个",
+        info.dlcs.len()
+    ));
+    Ok(format!(
+        "已添加 {name}：DLC {} 个，manifest 就绪 {downloaded} 个。重启 Steam 后在库中安装。",
+        info.dlcs.len()
+    ))
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -257,6 +298,7 @@ pub(crate) struct GameHaven {
     pub(crate) account_result: Option<Result<String, String>>,
     pub(crate) launch_result: Option<Result<String, String>>,
     pub(crate) repair: RepairJob,
+    pub(crate) add_game: Option<Receiver<Result<String, String>>>,
     pub(crate) auto_restart: bool,
 }
 
@@ -335,6 +377,7 @@ impl GameHaven {
             account_result: None,
             launch_result: None,
             repair: RepairJob::Idle,
+            add_game: None,
             auto_restart: true,
         })
     }
@@ -347,6 +390,7 @@ impl GameHaven {
         self.poll_restart(ctx);
         self.poll_repair(ctx);
         self.poll_manifest_download(ctx);
+        self.poll_add_game(ctx);
         self.download.poll(ctx, &mut self.app_id);
     }
 
@@ -533,6 +577,68 @@ impl GameHaven {
                 )));
             }
             Err(error) => self.account_result = Some(Err(error)),
+        }
+    }
+
+    /// 一键添加：查 appinfo → 写 AdditionalApps/DlcData → 拉 depot manifest → 可选重启。
+    pub(crate) fn start_add_game(&mut self, app_id: u32, ctx: &egui::Context) {
+        if self.add_game.is_some() {
+            return;
+        }
+        let Some(steam_root) = steam::env::steam_root() else {
+            self.add_result = Some(Err("没有找到 Steam 安装目录。".to_owned()));
+            return;
+        };
+        let Some(library) = self
+            .library
+            .clone()
+            .or_else(|| self.libraries.first().map(|library| library.path.clone()))
+        else {
+            self.add_result = Some(Err("没有找到 Steam 库。".to_owned()));
+            return;
+        };
+        let Some(config_path) = steam::env::sls_config_path() else {
+            self.add_result = Some(Err("没有找到 SLSsteam 的 config.yaml。".to_owned()));
+            return;
+        };
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match thread::Builder::new()
+            .name("game-add".into())
+            .spawn(move || {
+                let result = run_add_game(app_id, &steam_root, &library, &config_path);
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            }) {
+            Ok(_) => {
+                self.add_result = None;
+                self.add_game = Some(receiver);
+            }
+            Err(error) => {
+                self.add_result = Some(Err(format!("无法启动添加任务（{error}）。")));
+            }
+        }
+    }
+
+    fn poll_add_game(&mut self, ctx: &egui::Context) {
+        let result = match &self.add_game {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err("添加任务意外结束。".to_owned())),
+            },
+            None => None,
+        };
+        if let Some(result) = result {
+            self.add_game = None;
+            let added = result.is_ok();
+            self.add_result = Some(result);
+            if added && self.auto_restart {
+                self.start_restart(ctx);
+            }
         }
     }
 
