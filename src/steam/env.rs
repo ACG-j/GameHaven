@@ -297,6 +297,19 @@ pub(crate) fn find_steam_processes() -> Vec<ProcessInfo> {
     processes
 }
 
+/// 可选成就工具 SLScheevo 的位置。
+pub fn slscheevo_path() -> Option<PathBuf> {
+    let home = std::env::home_dir()?;
+    [
+        home.join(".local/share/SLScheevo"),
+        home.join(".local/bin/SLScheevo"),
+        PathBuf::from("/usr/bin/SLScheevo"),
+        PathBuf::from("/usr/local/bin/SLScheevo"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
 pub fn steam_root() -> Option<PathBuf> {
     find_roots().into_iter().next().map(|root| root.path)
 }

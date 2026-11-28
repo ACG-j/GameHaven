@@ -64,6 +64,27 @@ SLSsteam 通过 `LD_AUDIT` 在 Steam 启动时加载。程序不修改 Steam 二
 
 下一阶段聚焦清单版本、DLC 批量登记和库页游戏卡。完整计划见 [docs/roadmap.md](docs/roadmap.md)。
 
+## 打包
+
+仓库自带桌面入口与图标：
+
+- `packaging/gamehaven.desktop`
+- `packaging/gamehaven.svg`
+- `packaging/build-appimage.sh`（需要 `appimagetool`）
+
+```bash
+./packaging/build-appimage.sh
+```
+
+也可以直接安装到用户目录：
+
+```bash
+cargo build --release --locked
+install -Dm755 target/release/gamehaven ~/.local/bin/gamehaven
+install -Dm644 packaging/gamehaven.desktop ~/.local/share/applications/gamehaven.desktop
+install -Dm644 packaging/gamehaven.svg ~/.local/share/icons/hicolor/scalable/apps/gamehaven.svg
+```
+
 ## 许可证
 
 GPL-3.0-or-later。界面组件使用 [egui_mineral_material](https://github.com/lajosbencz/egui_mineral)（GPL-3.0-or-later），因此本项目整体按 GPL-3.0 发布。

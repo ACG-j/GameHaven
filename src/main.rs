@@ -54,7 +54,27 @@ impl Page {
     }
 }
 
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let line = format!("{info}\n");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(
+                std::env::home_dir()
+                    .map(|home| home.join(".local/share/gamehaven/crash.log"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("/tmp/gamehaven-crash.log")),
+            )
+            .and_then(|mut file| {
+                use std::io::Write;
+                file.write_all(line.as_bytes())
+            });
+        journal::record(&format!("panic: {info}"));
+    }));
+}
+
 fn main() -> eframe::Result {
+    install_panic_hook();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id("io.github.ACG-j.GameHaven")

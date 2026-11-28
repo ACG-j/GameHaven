@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=GameHaven
+Name[zh_CN]=游栖
+Comment=Linux Steam toolbox
+Comment[zh_CN]=Linux 上的 Steam 工具箱
+Exec=gamehaven
+Icon=gamehaven
+Terminal=false
+Type=Application
+Categories=Utility;Game;
+StartupWMClass=io.github.ACG-j.GameHaven

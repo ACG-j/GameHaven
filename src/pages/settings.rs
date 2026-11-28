@@ -208,6 +208,29 @@ impl GameHaven {
             widgets::caption(ui, "日志文件在 ~/.local/share/gamehaven/journal.log");
         });
 
+        // 成就：SLScheevo 是可选外部工具，只做检测，不代管。
+        let scheevo = steam::env::slscheevo_path();
+        widgets::section(ui, "成就", |ui| {
+            match scheevo.as_deref() {
+                Some(path) => {
+                    widgets::key_value(ui, "SLScheevo", &path.display().to_string());
+                    ui.add_space(design::SPACE_2);
+                    widgets::caption(
+                        ui,
+                        "已检测到 SLScheevo；成就数据的生成与导入在它自己的界面里完成。",
+                    );
+                }
+                None => {
+                    widgets::caption(ui, "没有找到 SLScheevo（可选）。");
+                    ui.add_space(design::SPACE_1);
+                    widgets::caption(
+                        ui,
+                        "它是独立的成就数据生成工具，放在 ~/.local/bin 或 /usr/local/bin 即可被识别。",
+                    );
+                }
+            }
+        });
+
         // 关于：版本与许可证。
         widgets::section(ui, "关于", |ui| {
             widgets::key_value(ui, "版本", env!("CARGO_PKG_VERSION"));
