@@ -52,6 +52,12 @@ impl Page {
     }
 }
 
+pub(crate) enum RepairJob {
+    Idle,
+    Running(Receiver<Result<String, String>>),
+    Done(Result<String, String>),
+}
+
 pub(crate) enum RestartState {
     Idle,
     Running(Receiver<Result<String, String>>),
@@ -247,6 +253,7 @@ pub(crate) struct GameHaven {
     pub(crate) remove_result: Option<Result<String, String>>,
     pub(crate) account_result: Option<Result<String, String>>,
     pub(crate) launch_result: Option<Result<String, String>>,
+    pub(crate) repair: RepairJob,
     pub(crate) auto_restart: bool,
 }
 
@@ -321,6 +328,7 @@ impl GameHaven {
             remove_result: None,
             account_result: None,
             launch_result: None,
+            repair: RepairJob::Idle,
             auto_restart: true,
         })
     }
@@ -331,6 +339,7 @@ impl GameHaven {
         self.covers.poll(ctx);
         self.env.poll(ctx);
         self.poll_restart(ctx);
+        self.poll_repair(ctx);
         self.download.poll(ctx, &mut self.app_id);
     }
 
@@ -443,6 +452,55 @@ impl GameHaven {
             self.env.refresh(ctx);
         } else {
             self.remove_result = Some(Err(errors.join(" ")));
+        }
+    }
+
+    pub(crate) fn start_repair(
+        &mut self,
+        library: &steam_library::Library,
+        app_id: u32,
+        installdir: &str,
+        ctx: &egui::Context,
+    ) {
+        if matches!(self.repair, RepairJob::Running(_)) {
+            return;
+        }
+        let steamapps = library.path.join("steamapps");
+        let game_dir = steamapps.join("common").join(installdir);
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match thread::Builder::new()
+            .name("steam-acf".into())
+            .spawn(move || {
+                let size = steam::acf::dir_size(&game_dir);
+                let result = steam::acf::repair(&steamapps, app_id, size).map(|path| {
+                    journal::record(&format!("修复 ACF：{app_id}，SizeOnDisk {size}"));
+                    format!("已修复 {}（{} 字节）。", path.display(), size)
+                });
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            }) {
+            Ok(_) => self.repair = RepairJob::Running(receiver),
+            Err(error) => {
+                self.repair = RepairJob::Done(Err(format!("无法启动修复任务（{error}）。")));
+            }
+        }
+    }
+
+    fn poll_repair(&mut self, ctx: &egui::Context) {
+        let result = match &self.repair {
+            RepairJob::Running(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => Some(Err("修复任务意外结束。".to_owned())),
+            },
+            _ => None,
+        };
+        if let Some(result) = result {
+            self.repair = RepairJob::Done(result);
         }
     }
 

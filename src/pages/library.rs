@@ -14,12 +14,18 @@ use crate::widgets;
 ///
 /// `game_row` 是自由函数，拿不到 `&mut GameHaven`，所以行内只返回动作，由页面层收集后统一下发。
 /// 「启动」需要知道走哪个客户端，因此带上库索引。
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum RowAction {
     /// 二次确认后移除这个 AppID 的注入。
     Remove(u32),
     /// 用 `libraries[library]` 对应的客户端启动 `app_id`。
     Launch { library: usize, app_id: u32 },
+    /// 按实际目录大小修复这个 AppID 的 ACF。
+    Repair {
+        library: usize,
+        app_id: u32,
+        installdir: String,
+    },
 }
 
 impl GameHaven {
@@ -78,6 +84,15 @@ impl GameHaven {
                         self.launch_game(library, app_id);
                     }
                 }
+                RowAction::Repair {
+                    library,
+                    app_id,
+                    installdir,
+                } => {
+                    if let Some(library) = libraries.get(library) {
+                        self.start_repair(library, app_id, &installdir, &ctx);
+                    }
+                }
             }
         }
 
@@ -86,6 +101,9 @@ impl GameHaven {
             result_line(ui, result);
         }
         if let Some(result) = &self.launch_result {
+            result_line(ui, result);
+        }
+        if let crate::RepairJob::Done(result) = &self.repair {
             result_line(ui, result);
         }
 
@@ -218,6 +236,16 @@ fn game_row(
                 action = Some(RowAction::Launch {
                     library: library_index,
                     app_id: app.app_id,
+                });
+            }
+            // 未完成的记录可以按实际目录大小重写 ACF。
+            if incomplete
+                && widgets::text_button(ui, &format!("repair-{}", app.app_id), "修复")
+            {
+                action = Some(RowAction::Repair {
+                    library: library_index,
+                    app_id: app.app_id,
+                    installdir: app.installdir.clone(),
                 });
             }
             ui.label(RichText::new(meta).size(design::TEXT_LABEL).color(variant));

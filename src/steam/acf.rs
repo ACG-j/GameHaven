@@ -35,6 +35,58 @@ pub fn path(steamapps: &Path, app_id: u32) -> PathBuf {
     steamapps.join(format!("appmanifest_{app_id}.acf"))
 }
 
+/// 递归统计目录大小，跳过符号链接，避免循环。
+pub fn dir_size(path: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(path) else {
+        return 0;
+    };
+    let mut total = 0;
+    for entry in entries.flatten() {
+        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            total += dir_size(&entry.path());
+        } else if metadata.is_file() {
+            total += metadata.len();
+        }
+    }
+    total
+}
+
+/// 按实际目录大小修复已有 ACF 的 `SizeOnDisk` / `StateFlags` / `LastUpdated`。
+pub fn repair(steamapps: &Path, app_id: u32, size_on_disk: u64) -> Result<PathBuf, String> {
+    let target = path(steamapps, app_id);
+    let text = fs::read_to_string(&target)
+        .map_err(|error| format!("无法读取 {}：{error}", target.display()))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    for line in &mut lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("\"SizeOnDisk\"") {
+            *line = format!("\t\"SizeOnDisk\"\t\t\"{size_on_disk}\"");
+        } else if trimmed.starts_with("\"StateFlags\"") {
+            *line = "\t\"StateFlags\"\t\t\"4\"".to_owned();
+        } else if trimmed.starts_with("\"LastUpdated\"") {
+            *line = format!("\t\"LastUpdated\"\t\t\"{now}\"");
+        }
+    }
+    let backup = target.with_extension("acf.bak");
+    fs::copy(&target, &backup)
+        .map_err(|error| format!("无法备份 {}：{error}", backup.display()))?;
+    let mut output = lines.join("\n");
+    output.push('\n');
+    fs::write(&target, output)
+        .map_err(|error| format!("无法写入 {}：{error}", target.display()))?;
+    Ok(target)
+}
+
 pub fn write(steamapps: &Path, game: &GameInfo<'_>) -> Result<PathBuf, String> {
     let target = path(steamapps, game.app_id);
     if let Some(parent) = target.parent() {
@@ -117,6 +169,32 @@ mod tests {
         assert_eq!(sanitize_installdir("Forza Horizon 6"), "Forza Horizon 6");
         assert_eq!(sanitize_installdir("a/b:c*?"), "a_b_c__");
         assert_eq!(sanitize_installdir("  ..  "), "Game");
+    }
+
+    #[test]
+    fn repairs_size_and_state_flags() {
+        let directory = tempfile::tempdir().unwrap();
+        let steamapps = directory.path();
+        let target = path(steamapps, 10);
+        fs::write(
+            &target,
+            "\"AppState\"\n{\n\t\"StateFlags\"\t\t\"0\"\n\t\"SizeOnDisk\"\t\t\"0\"\n\t\"InstalledDepots\"\n\t{\n\t}\n}\n",
+        )
+        .unwrap();
+        repair(steamapps, 10, 4096).unwrap();
+        let text = fs::read_to_string(&target).unwrap();
+        assert!(text.contains("\"SizeOnDisk\"\t\t\"4096\""));
+        assert!(text.contains("\"StateFlags\"\t\t\"4\""));
+        assert!(target.with_extension("acf.bak").exists());
+    }
+
+    #[test]
+    fn sums_directory_size() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("a.bin"), vec![0u8; 100]).unwrap();
+        fs::create_dir(directory.path().join("sub")).unwrap();
+        fs::write(directory.path().join("sub/b.bin"), vec![0u8; 50]).unwrap();
+        assert_eq!(dir_size(directory.path()), 150);
     }
 
     #[test]
