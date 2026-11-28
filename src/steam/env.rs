@@ -620,6 +620,32 @@ fn build_checks(
         ),
     }
 
+    // SLSsteam 的 64 位构建需要 64 位 Steam 客户端；这个标记会把 Steam 锁在 32 位。
+    let locked_32 = roots
+        .first()
+        .is_some_and(|root| root.path.join(".steam-disable-steamrt64-client").exists());
+    let steamrt64 = roots
+        .first()
+        .is_some_and(|root| root.path.join("steamrt64/steam").is_file());
+    if locked_32 {
+        checks.push(
+            Check::warn(
+                "Steam 客户端",
+                "存在 .steam-disable-steamrt64-client，Steam 被锁定在 32 位客户端。",
+            )
+            .with_hint(
+                "SLSsteam 的 64 位构建需要 64 位客户端；删除这个标记后重启 Steam。",
+            ),
+        );
+    } else if steamrt64 {
+        checks.push(Check::ok("Steam 客户端", "使用 SteamRT3 64 位客户端。"));
+    } else {
+        checks.push(
+            Check::warn("Steam 客户端", "没有找到 steamrt64/steam。")
+                .with_hint("更新 Steam 客户端后再试。"),
+        );
+    }
+
     match sls_load_error {
         Some(message) => checks.push(
             Check::error("SLSsteam 加载", message).with_hint(
