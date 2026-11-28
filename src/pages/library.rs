@@ -103,7 +103,7 @@ impl GameHaven {
         if let Some(result) = &self.launch_result {
             result_line(ui, result);
         }
-        if let crate::RepairJob::Done(result) = &self.repair {
+        if let crate::jobs::RepairJob::Done(result) = &self.repair {
             result_line(ui, result);
         }
 
