@@ -5,6 +5,14 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// 公开的 manifest 镜像仓库：根目录平铺 `<depot>_<manifest>.manifest`，无需 key。
+const MIRROR_REPOS: &[&str] = &[
+    "qwe213312/k25FCdfEOoEJ42S6",
+    "mejikuhibiniu1/k25FCdfEOoEJ42S6",
+    "Sainan/k25FCdfEOoEJ42S6",
+];
 
 #[derive(Clone, Debug)]
 pub struct ManifestFile {
@@ -22,6 +30,69 @@ pub fn parse(path: &Path) -> Option<ManifestFile> {
         depot_id: depot.parse().ok()?,
         manifest_id: manifest.parse().ok()?,
         path: path.to_owned(),
+    })
+}
+
+/// 各镜像的 raw URL，按顺序尝试。
+pub fn source_urls(depot_id: u32, manifest_id: u64) -> Vec<String> {
+    MIRROR_REPOS
+        .iter()
+        .map(|repo| {
+            format!(
+                "https://raw.githubusercontent.com/{repo}/main/{depot_id}_{manifest_id}.manifest"
+            )
+        })
+        .collect()
+}
+
+/// 从公开镜像下载 manifest 字节。仓库未收录时返回错误。
+pub fn download(depot_id: u32, manifest_id: u64) -> Result<Vec<u8>, String> {
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(20)))
+        .build()
+        .into();
+    let mut last_error = None;
+    for url in source_urls(depot_id, manifest_id) {
+        match agent.get(&url).call() {
+            Ok(mut response) if response.status().is_success() => {
+                match response
+                    .body_mut()
+                    .with_config()
+                    .limit(16 * 1024 * 1024)
+                    .read_to_vec()
+                {
+                    Ok(bytes) if !bytes.is_empty() => return Ok(bytes),
+                    Ok(_) => last_error = Some("镜像返回空文件。".to_owned()),
+                    Err(error) => last_error = Some(format!("读取失败：{error}")),
+                }
+            }
+            Ok(response) => {
+                last_error = Some(format!("HTTP {}", response.status().as_u16()));
+            }
+            Err(ureq::Error::StatusCode(404)) => continue,
+            Err(error) => last_error = Some(format!("请求失败：{error}")),
+        }
+    }
+    Err(format!(
+        "公开镜像里没有 {depot_id}_{manifest_id}.manifest{}",
+        last_error
+            .map(|error| format!("（{error}）"))
+            .unwrap_or_default()
+    ))
+}
+
+/// 把下载到的字节保存到缓存目录，返回可供 [`install`] 使用的文件。
+pub fn cache_bytes(depot_id: u32, manifest_id: u64, bytes: &[u8]) -> Result<ManifestFile, String> {
+    let home = std::env::home_dir().ok_or_else(|| "无法确定缓存目录。".to_owned())?;
+    let directory = home.join(".cache/gamehaven/manifests");
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("无法创建 {}：{error}", directory.display()))?;
+    let path = directory.join(format!("{depot_id}_{manifest_id}.manifest"));
+    fs::write(&path, bytes).map_err(|error| format!("无法写入 {}：{error}", path.display()))?;
+    Ok(ManifestFile {
+        depot_id,
+        manifest_id,
+        path,
     })
 }
 
@@ -68,6 +139,14 @@ mod tests {
         assert_eq!(file.manifest_id, 7450216563795868763);
         assert!(parse(Path::new("/tmp/renamed.manifest")).is_none());
         assert!(parse(Path::new("/tmp/4115451_7450216563795868763.txt")).is_none());
+    }
+
+    #[test]
+    fn builds_mirror_urls_in_order() {
+        let urls = source_urls(2483191, 3954142684088109524);
+        assert_eq!(urls.len(), 3);
+        assert!(urls[0].starts_with("https://raw.githubusercontent.com/qwe213312/"));
+        assert!(urls[0].ends_with("/2483191_3954142684088109524.manifest"));
     }
 
     #[test]

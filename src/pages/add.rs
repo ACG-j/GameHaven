@@ -287,6 +287,38 @@ impl GameHaven {
                 }
             });
 
+            // 下载行：填 depot 与 manifest ID，从内置镜像取同名文件；
+            // 下载成功后由 main.rs 填好 depot_manifest 并走与手动选择相同的导入流程。
+            ui.add_space(SPACE_3);
+            let download_busy = self.manifest_download.is_some();
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.depot_input)
+                        .hint_text("Depot ID")
+                        .desired_width(140.0),
+                );
+                ui.add_space(SPACE_2);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.manifest_input)
+                        .hint_text("Manifest ID")
+                        .desired_width(180.0),
+                );
+                ui.add_space(SPACE_2);
+                if widgets::tonal_button(ui, "add-download-manifest", "从仓库下载", !download_busy)
+                {
+                    self.start_manifest_download(ui.ctx());
+                }
+                if download_busy {
+                    ui.add_space(SPACE_2);
+                    ui.spinner();
+                }
+            });
+            ui.add_space(SPACE_1);
+            widgets::caption(
+                ui,
+                "内置 qwe213312 / mejikuhibiniu1 / Sainan 三个公开镜像，覆盖有限；找不到时用上面的「选择 .manifest」手动导入。",
+            );
+
             // 解析只看文件名，所以每次重绘重新算一遍即可。
             let parsed = self
                 .depot_manifest

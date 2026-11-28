@@ -238,6 +238,9 @@ pub(crate) struct GameHaven {
     pub(crate) manifest: Option<PathBuf>,
     pub(crate) library: Option<PathBuf>,
     pub(crate) depot_manifest: Option<PathBuf>,
+    pub(crate) depot_input: String,
+    pub(crate) manifest_input: String,
+    pub(crate) manifest_download: Option<Receiver<Result<PathBuf, String>>>,
     pub(crate) manifest_dialog: FileDialog,
     pub(crate) library_dialog: FileDialog,
     pub(crate) depot_manifest_dialog: FileDialog,
@@ -313,6 +316,9 @@ impl GameHaven {
             manifest: None,
             library: None,
             depot_manifest: None,
+            depot_input: String::new(),
+            manifest_input: String::new(),
+            manifest_download: None,
             manifest_dialog: picker("manifest", labels.clone()),
             library_dialog: picker("library", labels.clone()),
             depot_manifest_dialog: picker("depot-manifest", labels),
@@ -340,6 +346,7 @@ impl GameHaven {
         self.env.poll(ctx);
         self.poll_restart(ctx);
         self.poll_repair(ctx);
+        self.poll_manifest_download(ctx);
         self.download.poll(ctx, &mut self.app_id);
     }
 
@@ -526,6 +533,65 @@ impl GameHaven {
                 )));
             }
             Err(error) => self.account_result = Some(Err(error)),
+        }
+    }
+
+    /// 从公开镜像下载 manifest，成功后走与手动导入相同的落盘流程。
+    pub(crate) fn start_manifest_download(&mut self, ctx: &egui::Context) {
+        if self.manifest_download.is_some() {
+            return;
+        }
+        let Ok(depot_id) = self.depot_input.trim().parse::<u32>() else {
+            self.depot_manifest_result = Some(Err("Depot ID 必须是数字。".to_owned()));
+            return;
+        };
+        let Ok(manifest_id) = self.manifest_input.trim().parse::<u64>() else {
+            self.depot_manifest_result = Some(Err("Manifest ID 必须是数字。".to_owned()));
+            return;
+        };
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match thread::Builder::new()
+            .name("manifest-download".into())
+            .spawn(move || {
+                let result = steam::manifest::download(depot_id, manifest_id).and_then(|bytes| {
+                    steam::manifest::cache_bytes(depot_id, manifest_id, &bytes)
+                        .map(|file| file.path)
+                });
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            }) {
+            Ok(_) => self.manifest_download = Some(receiver),
+            Err(error) => {
+                self.depot_manifest_result =
+                    Some(Err(format!("无法启动下载任务（{error}）。")));
+            }
+        }
+    }
+
+    fn poll_manifest_download(&mut self, ctx: &egui::Context) {
+        let result = match &self.manifest_download {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("manifest 下载任务意外结束。".to_owned()))
+                }
+            },
+            None => None,
+        };
+        if let Some(result) = result {
+            self.manifest_download = None;
+            match result {
+                Ok(path) => {
+                    self.depot_manifest = Some(path);
+                    self.import_depot_manifest(ctx);
+                }
+                Err(error) => self.depot_manifest_result = Some(Err(error)),
+            }
         }
     }
 
