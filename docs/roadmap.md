@@ -30,8 +30,8 @@
 | --- | --- | --- | --- |
 | P0 添加闭环 | 5/5 | 体检、配置行编辑、注入启停、一键添加、撤销 | — |
 | P1 清单与版本 | 4/5 | manifest 下载/落盘、ManifestIds、DLC 映射、搜索、移除注入 | manifest AES 解密/protobuf 校验（当前镜像提供已解密文件）；移除不清理 ACF/depotcache |
-| P2 库与账号 | 3.5/4 | 封面、大小、注入标记、启动、ACF 修复、账号切换 | 成就（SLScheevo）；「最后更新」「能否下载」 |
-| P3 打磨 | 3/6 | 设置页、日志面板、设置持久化 | i18n、AppImage/Flatpak 打包、自更新、崩溃恢复 |
+| P2 库与账号 | 3.5/4 | 封面、大小、注入标记、启动、ACF 修复、账号切换、SLScheevo 检测 | 成就生成与导入（依赖外部工具）；「最后更新」「能否下载」 |
+| P3 打磨 | 5/6 | 设置页、日志面板、设置持久化、崩溃日志、更新检查、AppImage 脚本 | i18n（当前仅中文） |
 
 代码量约 6.3k 行 Rust，36 个测试。核心旅程「输入 AppID → 写入 SLSsteam → Steam 认账」已闭环。Forza 这类需要 ownership ticket 的游戏受 SLSsteam 能力限制（作者已移除 SmartTickets），不属于本项目代码缺口。
 

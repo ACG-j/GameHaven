@@ -231,9 +231,34 @@ impl GameHaven {
             }
         });
 
-        // 关于：版本与许可证。
+        // 关于：版本、更新检查与许可证。
         widgets::section(ui, "关于", |ui| {
             widgets::key_value(ui, "版本", env!("CARGO_PKG_VERSION"));
+            ui.add_space(design::SPACE_2);
+            let busy = self.update_check.is_some();
+            if widgets::tonal_button(ui, "settings-check-update", "检查更新", !busy) {
+                self.check_update(ui.ctx());
+            }
+            if busy {
+                ui.add_space(design::SPACE_2);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    widgets::caption(ui, "正在检查 GitHub Releases…");
+                });
+            }
+            if let Some(result) = &self.update_result {
+                ui.add_space(design::SPACE_2);
+                match result {
+                    Ok(message) => {
+                        ui.label(
+                            RichText::new(message.as_str())
+                                .size(design::TEXT_BODY)
+                                .color(design::OK),
+                        );
+                    }
+                    Err(message) => widgets::error_text(ui, message),
+                }
+            }
             ui.add_space(design::SPACE_2);
             widgets::key_value(ui, "许可证", "GPL-3.0-or-later");
             ui.add_space(design::SPACE_2);

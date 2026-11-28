@@ -22,6 +22,7 @@ mod sls;
 mod steam;
 mod steam_library;
 mod steam_store;
+mod updater;
 mod widgets;
 
 use jobs::{RepairJob, RestartState, StoreLookup, StoreSearch, run_add_game};
@@ -122,6 +123,8 @@ pub(crate) struct GameHaven {
     pub(crate) account_result: Option<Result<String, String>>,
     pub(crate) launch_result: Option<Result<String, String>>,
     pub(crate) undo_result: Option<Result<String, String>>,
+    pub(crate) update_check: Option<Receiver<Result<String, String>>>,
+    pub(crate) update_result: Option<Result<String, String>>,
     pub(crate) repair: RepairJob,
     pub(crate) add_game: Option<Receiver<Result<String, String>>>,
     pub(crate) auto_restart: bool,
@@ -203,6 +206,8 @@ impl GameHaven {
             account_result: None,
             launch_result: None,
             undo_result: None,
+            update_check: None,
+            update_result: None,
             repair: RepairJob::Idle,
             add_game: None,
             auto_restart: settings::load().auto_restart,
@@ -219,6 +224,7 @@ impl GameHaven {
         self.poll_repair(ctx);
         self.poll_manifest_download(ctx);
         self.poll_add_game(ctx);
+        self.poll_update(ctx);
         self.download.poll(ctx, &mut self.app_id);
     }
 
@@ -416,6 +422,49 @@ impl GameHaven {
     }
 
     /// 一键添加：查 appinfo → 写 AdditionalApps/DlcData → 拉 depot manifest → 可选重启。
+    pub(crate) fn check_update(&mut self, ctx: &egui::Context) {
+        if self.update_check.is_some() {
+            return;
+        }
+        let ctx = ctx.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        match thread::Builder::new()
+            .name("update-check".into())
+            .spawn(move || {
+                let result = updater::latest().map(|release| match release {
+                    Some(release) => updater::compare(env!("CARGO_PKG_VERSION"), &release.tag),
+                    None => "仓库还没有发布版本。".to_owned(),
+                });
+                let _ = sender.send(result);
+                ctx.request_repaint();
+            }) {
+            Ok(_) => self.update_check = Some(receiver),
+            Err(error) => {
+                self.update_result = Some(Err(format!("无法启动更新检查（{error}）。")));
+            }
+        }
+    }
+
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let result = match &self.update_check {
+            Some(receiver) => match receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(200));
+                    None
+                }
+                Err(TryRecvError::Disconnected) => {
+                    Some(Err("更新检查意外结束。".to_owned()))
+                }
+            },
+            None => None,
+        };
+        if let Some(result) = result {
+            self.update_check = None;
+            self.update_result = Some(result);
+        }
+    }
+
     pub(crate) fn undo_last_write(&mut self, ctx: &egui::Context) {
         match journal::undo_last() {
             Ok(message) => {
